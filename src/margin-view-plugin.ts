@@ -1,12 +1,23 @@
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { type App, Component, MarkdownRenderer, editorInfoField, loadMathJax } from "obsidian";
-import { scanFootnotes, serializeDefContent } from "./footnote-scan";
+import { footnoteRefIsVisible, scanFootnotes, serializeDefContent } from "./footnote-scan";
 import { resolveCollisions } from "./collision-avoidance";
+import {
+	MIN_MARKDOWN_MARGIN_GAP,
+	normalizeMarkdownMarginSettings,
+	type MarkdownMarginSettings,
+} from "./markdown-margin-settings";
 
 const LAYER_CLASS = "margin-notes-layer";
 const BOX_CLASS = "margin-notes-box";
 const EDITING_CLASS = "is-editing";
 const MIN_GAP = 8;
+
+export interface MarkdownMarginSettingsController {
+	get(): MarkdownMarginSettings;
+	save(settings: MarkdownMarginSettings): void;
+	onChange(listener: (settings: MarkdownMarginSettings) => void): () => void;
+}
 
 interface BoxData {
 	id: string;
@@ -19,6 +30,11 @@ interface BoxData {
 interface Measurement {
 	left: number;
 	boxes: BoxData[];
+}
+
+interface MarginBoxHandle {
+	el: HTMLDivElement;
+	bodyEl: HTMLDivElement;
 }
 
 /**
@@ -45,14 +61,25 @@ class MarginNotesViewPlugin {
 	private renderComponent = new Component();
 	/** Bumped per rebuild so stale async render passes know to bail out. */
 	private buildGen = 0;
+	private marginSettings: MarkdownMarginSettings;
+	private unsubscribeSettings: () => void;
+	private resizeCleanup: (() => void) | null = null;
 
 	constructor(
 		private view: EditorView,
 		private app: App,
+		private settingsController: MarkdownMarginSettingsController,
 	) {
 		this.renderComponent.load();
 		this.layer = document.createElement("div");
 		this.layer.className = LAYER_CLASS;
+		this.marginSettings = settingsController.get();
+		this.applyMarginSettings(this.marginSettings);
+		this.unsubscribeSettings = settingsController.onChange((settings) => {
+			this.marginSettings = settings;
+			this.applyMarginSettings(settings);
+			this.scheduleRebuild();
+		});
 		this.view.scrollDOM.appendChild(this.layer);
 		this.scheduleRebuild();
 	}
@@ -104,11 +131,15 @@ class MarginNotesViewPlugin {
 		const boxes: BoxData[] = [];
 		const seen = new Set<string>();
 		for (const ref of refs) {
+			// CM6 excludes folded document spans from visibleRanges. Check before
+			// de-duplicating so a hidden first reference does not suppress a later,
+			// visible reference to the same footnote.
+			if (!footnoteRefIsVisible(ref, view.visibleRanges)) continue;
 			if (seen.has(ref.id)) continue;
-			seen.add(ref.id);
 
 			const coords = view.coordsAtPos(ref.pos);
 			if (!coords) continue; // not currently measured (e.g. far outside viewport)
+			seen.add(ref.id);
 
 			const top = coords.top - scrollerRect.top + view.scrollDOM.scrollTop;
 			const content = defsById.get(ref.id);
@@ -138,7 +169,7 @@ class MarginNotesViewPlugin {
 			top: box.top,
 			height: 0,
 			content: box.content,
-			el: this.createBox(box),
+			...this.createBox(box),
 		}));
 
 		void this.finishRender(++this.buildGen, rendered);
@@ -151,9 +182,16 @@ class MarginNotesViewPlugin {
 	 */
 	private async finishRender(
 		gen: number,
-		rendered: { id: string; top: number; height: number; content: string; el: HTMLDivElement }[],
+		rendered: {
+			id: string;
+			top: number;
+			height: number;
+			content: string;
+			el: HTMLDivElement;
+			bodyEl: HTMLDivElement;
+		}[],
 	): Promise<void> {
-		await Promise.all(rendered.map((r) => this.renderDisplay(r.el, r.content)));
+		await Promise.all(rendered.map((r) => this.renderDisplay(r.bodyEl, r.content)));
 		if (gen !== this.buildGen) return; // superseded by a newer rebuild
 
 		this.view.requestMeasure({
@@ -180,23 +218,25 @@ class MarginNotesViewPlugin {
 		return this.view.state.field(editorInfoField, false)?.file?.path ?? "";
 	}
 
-	private createBox(box: BoxData): HTMLDivElement {
+	private createBox(box: BoxData): MarginBoxHandle {
 		const el = this.layer.createDiv(BOX_CLASS);
-		el.spellcheck = false;
 		el.dataset.footnoteId = box.id;
 		el.dataset.source = box.content;
-		el.dataset.placeholder = box.hasDef ? "(空)" : `[^${box.id}] 无定义,点击添加`;
 		el.style.top = `${box.top}px`;
+		const bodyEl = el.createDiv("margin-notes-body");
+		bodyEl.spellcheck = false;
+		bodyEl.dataset.placeholder = box.hasDef ? "(空)" : `[^${box.id}] 无定义,点击添加`;
+		this.attachResize(el);
 
 		// Keep CM6 from treating interactions with the box as editor input.
 		el.addEventListener("mousedown", (e) => e.stopPropagation());
 		el.addEventListener("click", () => {
-			if (!el.hasClass(EDITING_CLASS)) this.enterEdit(el, box.id);
+			if (!el.hasClass(EDITING_CLASS)) this.enterEdit(el, bodyEl, box.id);
 		});
-		el.addEventListener("blur", () => {
+		bodyEl.addEventListener("blur", () => {
 			if (!el.hasClass(EDITING_CLASS)) return;
-			const changed = this.commit(box.id, el);
-			el.contentEditable = "false";
+			const changed = this.commit(box.id, bodyEl);
+			bodyEl.contentEditable = "false";
 			el.removeClass(EDITING_CLASS);
 			this.editingId = null;
 			if (this.pendingRebuild) {
@@ -205,34 +245,95 @@ class MarginNotesViewPlugin {
 			} else if (!changed) {
 				// No doc change means no rebuild is coming — restore the
 				// rendered view ourselves.
-				void this.renderDisplay(el, el.dataset.source ?? "");
+				void this.renderDisplay(bodyEl, el.dataset.source ?? "");
 			}
 		});
-		el.addEventListener("keydown", (e) => {
+		bodyEl.addEventListener("keydown", (e) => {
 			if (!el.hasClass(EDITING_CLASS)) return;
 			if (e.key === "Enter" && !e.shiftKey) {
 				e.preventDefault();
-				el.blur(); // commit
+				bodyEl.blur(); // commit
 			} else if (e.key === "Escape") {
 				e.preventDefault();
-				el.setText(el.dataset.source ?? "");
-				el.blur(); // text equals source → commit is a no-op → re-render
+				bodyEl.setText(el.dataset.source ?? "");
+				bodyEl.blur(); // text equals source → commit is a no-op → re-render
 			}
 		});
-		return el;
+		return { el, bodyEl };
+	}
+
+	private applyMarginSettings(settings: MarkdownMarginSettings): void {
+		this.layer.style.setProperty("--margin-notes-md-width", `${settings.width}px`);
+		this.layer.style.setProperty("--margin-notes-md-gap", `${settings.gap}px`);
+	}
+
+	/** Both edges resize one shared Markdown rail, so every side note stays aligned. */
+	private attachResize(box: HTMLDivElement): void {
+		const begin = (edge: "left" | "right") => (ev: PointerEvent) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			this.resizeCleanup?.();
+			const startX = ev.clientX;
+			const start = { ...this.marginSettings };
+			box.addClass("is-resizing");
+
+			const solve = (x: number): MarkdownMarginSettings => {
+				const dx = x - startX;
+				if (edge === "right") {
+					return normalizeMarkdownMarginSettings({ width: start.width + dx, gap: start.gap });
+				}
+				// The left edge faces the document. Move it while keeping the outer
+				// edge fixed; once the minimum gap is reached, further growth belongs
+				// to the outer/right handle.
+				const width = Math.min(start.width - dx, start.width + start.gap - MIN_MARKDOWN_MARGIN_GAP);
+				const normalized = normalizeMarkdownMarginSettings({ width, gap: start.gap + start.width - width });
+				return normalized;
+			};
+
+			const onMove = (move: PointerEvent) => {
+				this.applyMarginSettings(solve(move.clientX));
+			};
+			const cleanup = () => {
+				window.removeEventListener("pointermove", onMove);
+				window.removeEventListener("pointerup", onUp);
+				window.removeEventListener("pointercancel", onCancel);
+				box.removeClass("is-resizing");
+				this.resizeCleanup = null;
+			};
+			const onUp = (up: PointerEvent) => {
+				const next = solve(up.clientX);
+				cleanup();
+				this.settingsController.save(next);
+			};
+			const onCancel = () => {
+				cleanup();
+				this.applyMarginSettings(start);
+			};
+			this.resizeCleanup = cleanup;
+			window.addEventListener("pointermove", onMove);
+			window.addEventListener("pointerup", onUp);
+			window.addEventListener("pointercancel", onCancel);
+		};
+
+		for (const edge of ["left", "right"] as const) {
+			const grip = box.createDiv(`margin-notes-resize is-${edge}`);
+			grip.setAttribute("aria-label", edge === "left" ? "拖动内边缘调整全部注脚宽度" : "拖动外边缘调整全部注脚宽度");
+			grip.addEventListener("pointerdown", begin(edge));
+			grip.addEventListener("click", (ev) => ev.stopPropagation());
+		}
 	}
 
 	/** Swaps rendered Markdown for the editable plain source. */
-	private enterEdit(el: HTMLDivElement, id: string): void {
+	private enterEdit(el: HTMLDivElement, bodyEl: HTMLDivElement, id: string): void {
 		this.editingId = id;
 		el.addClass(EDITING_CLASS);
-		el.empty();
-		el.contentEditable = "true";
-		el.setText(el.dataset.source ?? "");
-		el.focus();
+		bodyEl.empty();
+		bodyEl.contentEditable = "true";
+		bodyEl.setText(el.dataset.source ?? "");
+		bodyEl.focus();
 		const sel = window.getSelection();
 		if (sel) {
-			sel.selectAllChildren(el);
+			sel.selectAllChildren(bodyEl);
 			sel.collapseToEnd();
 		}
 	}
@@ -274,11 +375,13 @@ class MarginNotesViewPlugin {
 	}
 
 	destroy(): void {
+		this.resizeCleanup?.();
+		this.unsubscribeSettings();
 		this.renderComponent.unload();
 		this.layer.remove();
 	}
 }
 
-export function createMarginNotesExtension(app: App) {
-	return ViewPlugin.define((view) => new MarginNotesViewPlugin(view, app));
+export function createMarginNotesExtension(app: App, settings: MarkdownMarginSettingsController) {
+	return ViewPlugin.define((view) => new MarginNotesViewPlugin(view, app, settings));
 }

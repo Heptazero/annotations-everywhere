@@ -9,19 +9,20 @@
  */
 export function openSwatchPicker(opts: {
 	at: { x: number; y: number };
-	colors: string[];
-	current?: string;
-	onPick: (color: string | undefined) => void;
+	swatches: AnnotationColorSlot[];
+	currentKey?: string;
+	onPick: (colorKey: string | undefined) => void;
 }): void {
 	const el = document.body.createDiv("margin-notes-pdf-swatches");
 
-	for (const color of opts.colors) {
+	for (const slot of opts.swatches) {
 		const b = el.createDiv("margin-notes-pdf-swatch-dot");
-		b.style.background = color;
-		b.setAttribute("aria-label", color);
-		if (opts.current?.toLowerCase() === color.toLowerCase()) b.addClass("is-current");
+		b.style.background = slot.color;
+		b.setAttribute("aria-label", slot.name);
+		b.setAttribute("title", slot.name);
+		if (opts.currentKey === slot.id) b.addClass("is-current");
 		b.addEventListener("click", () => {
-			opts.onPick(color);
+			opts.onPick(slot.id);
 			close();
 		});
 	}
@@ -57,3 +58,4 @@ export function openSwatchPicker(opts: {
 		document.addEventListener("keydown", onKey, true);
 	});
 }
+import type { AnnotationColorSlot } from "./annotation-settings";

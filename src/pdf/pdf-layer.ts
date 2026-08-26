@@ -4,7 +4,7 @@
 // Obsidian upgrade breaks this, fix both copies.
 
 import { App, Component, FileView } from "obsidian";
-import type { ObsidianViewer, PDFDocumentProxy, PDFPageView, PDFViewerComponent } from "./pdfjs-types";
+import type { ObsidianViewer, PDFPageView, PDFViewerComponent } from "./pdfjs-types";
 
 const OVERLAY_CLASS = "margin-notes-pdf-overlay";
 
@@ -24,13 +24,26 @@ function getViewerComponent(view: FileView): PDFViewerComponent | null {
 }
 
 /**
- * The live pdf.js document of an open PDF view. Reading it off the already-open
- * viewer avoids re-parsing the file from disk just to read its page count; it's
- * null only while the document is still loading.
+ * Exposes the loaded Obsidian PDF viewer to narrowly scoped adapters such as the
+ * native-outline fallback. Keep the undocumented component-chain lookup here so
+ * upgrades have one compatibility seam rather than several copies.
  */
-export function getPdfDocument(view: FileView): PDFDocumentProxy | null {
-	const obsidianViewer = getViewerComponent(view)?.child?.pdfViewer;
-	return obsidianViewer?.pdfViewer?.pdfDocument ?? obsidianViewer?.pdfDocument ?? null;
+export function onPdfViewerReady(
+	view: FileView,
+	owner: Component,
+	cb: (viewer: ObsidianViewer) => void
+): void {
+	const component = getViewerComponent(view);
+	if (!component) return;
+	let active = true;
+	owner.register(() => {
+		active = false;
+	});
+	const deliver = (viewer: ObsidianViewer | undefined) => {
+		if (active && viewer) cb(viewer);
+	};
+	if (component.child?.pdfViewer) deliver(component.child.pdfViewer);
+	else component.then((child) => deliver(child.pdfViewer));
 }
 
 interface PageInfo {
@@ -110,6 +123,29 @@ export function onTextLayerReady(
 		};
 		obsidianViewer.eventBus?.on("textlayerrendered", handler);
 		owner.register(() => obsidianViewer.eventBus?.off("textlayerrendered", handler));
+	};
+
+	const component = getViewerComponent(view);
+	if (!component) return;
+	if (component.child?.pdfViewer) {
+		attach(component.child.pdfViewer);
+	} else {
+		component.then((child) => attach(child.pdfViewer));
+	}
+}
+
+/**
+ * Fires as soon as pdf.js starts applying a new scale. Its page DOM may be in a
+ * transient CSS-scaled state until the following render burst settles, while our
+ * annotation layer lives beside (not inside) those page elements. Consumers can
+ * therefore hide stale geometry instead of visibly chasing those intermediate
+ * rectangles.
+ */
+export function onScaleChanging(view: FileView, owner: Component, cb: () => void): void {
+	const attach = (obsidianViewer: ObsidianViewer) => {
+		const handler = () => cb();
+		obsidianViewer.eventBus?.on("scalechanging", handler);
+		owner.register(() => obsidianViewer.eventBus?.off("scalechanging", handler));
 	};
 
 	const component = getViewerComponent(view);

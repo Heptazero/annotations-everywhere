@@ -1,7 +1,9 @@
-import { Component, FileView, Notice, TFile, type App, type Plugin } from "obsidian";
+import { Component, FileView, Menu, Notice, TFile, type App, type Plugin } from "obsidian";
 import { patchPluginData } from "../plugin-data";
 import { anchorFromActiveSelection } from "./annotation-anchor";
 import { AnnotationLayer } from "./annotation-layer";
+import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./annotation-layer-menus";
+import { AnnotationLayerPicker } from "./annotation-layer-picker";
 import {
 	applyPdfAnnotationStyleSettings,
 	clearPdfAnnotationStyleSettings,
@@ -12,27 +14,24 @@ import {
 import { HighlightModePicker } from "./highlight-mode-picker";
 import { PdfAnnotationStore } from "./annotation-store";
 import { makeAnnotationId, type MarginSide, type PdfAnnotation } from "./annotation-types";
-import {
-	canonicalOf,
-	differentLanguage,
-	findNameCandidates,
-	fingerprintsPair,
-	sameGeometry,
-	ScriptSampler,
-	type PdfFingerprint,
-} from "./counterpart";
-import { getActivePDFView, getPdfDocument, onPageReady, onTextLayerReady, type PdfRect } from "./pdf-layer";
-import { getTextLayerInfo } from "./selection-geom";
+import { comparePdfLayouts, largestCompatibleLayoutCluster, readPdfLayout } from "./layout-check";
+import { NativeOutlineBridge, type SharedOutlineResult } from "./native-outline-bridge";
+import { PairDecisionModal, type PairDecision } from "./pair-decision-modal";
+import { isPdf, pairingCandidates as listPairingCandidates } from "./pairing";
+import { getActivePDFView, onPageReady, onScaleChanging, onTextLayerReady, type PdfRect } from "./pdf-layer";
+import { outlineHasDestination, PdfOutlineReader, type PdfOutlineItem } from "./pdf-outline";
+import { sortAnnotationsForReading } from "./reading-order";
+import { SharedFileLifecycle } from "./shared-file-lifecycle";
 import type { PDFPageView } from "./pdfjs-types";
 import { attachRectSelectListener, type RectSelectController } from "./rect-select";
-import { headlessFingerprint } from "./headless-fingerprint";
-import { isPdf } from "./counterpart";
 import { findScrollAncestor } from "./scroll-container";
 
 /** How long to wait for the target page to render before correcting scroll
  * position and fading back in — in the same ballpark as revealAnnotation's
  * own 350ms wait, both guessing at pdf.js's render latency. */
 const SWITCH_SETTLE_MS = 380;
+/** Let sync/download writes settle before reading the PDF binary. */
+const SHARED_LAYOUT_RECHECK_DELAY_MS = 800;
 
 /** How a newly created note should appear. */
 export interface NewNoteForm {
@@ -45,8 +44,7 @@ interface ViewState {
 	pages: Map<number, PDFPageView>;
 	layer: AnnotationLayer;
 	currentPath: () => string | null;
-	/** Accumulates the script mix of the open document, for counterpart detection. */
-	sampler: ScriptSampler;
+	outlineBridge: NativeOutlineBridge;
 }
 
 /**
@@ -70,12 +68,27 @@ export class PdfAnnotationsController {
 	 * why the panel used to blank out and its rows did nothing.
 	 */
 	private lastPdfView: FileView | null = null;
+	/** Session-only view state. Null means no layer filter. */
+	private activeLayerId: string | null = null;
+	private outlineReader: PdfOutlineReader;
+	private layoutRecheckTimers = new Map<string, number>();
+	private fileLifecycle: SharedFileLifecycle;
 
 	constructor(
 		private plugin: Plugin,
 		private app: App
 	) {
 		this.store = new PdfAnnotationStore(app, plugin);
+		this.outlineReader = new PdfOutlineReader(app);
+		this.fileLifecycle = new SharedFileLifecycle({
+			app,
+			plugin,
+			store: this.store,
+			getDoubleColumnSplits: () => this.settings.doubleColumnSplits,
+			setDoubleColumnSplits: (next) => this.patchSettings({ doubleColumnSplits: next }),
+			refreshOutlines: () => this.refreshNativeOutlines(),
+			onPdfModified: (path) => this.queueSharedLayoutRecheck(path),
+		});
 	}
 
 	async onload(): Promise<void> {
@@ -89,7 +102,17 @@ export class PdfAnnotationsController {
 			new Notice(String(e instanceof Error ? e.message : e));
 			throw e;
 		}
-
+		this.store.migrateColorKeys(this.settings.palette);
+		// Persist the normalized object palette even when every legacy literal
+		// matched an existing slot. This removes the old string[] settings shape,
+		// rather than merely normalizing it again on every launch.
+		await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
+		if (this.store.legacyGroupsDowngraded > 0) {
+			new Notice(
+				`旧版的 ${this.store.legacyGroupsDowngraded} 组「仅关联」已解除;各文件批注都保留,重新加入共享组即可检查版式后共用。`,
+				9000
+			);
+		}
 		// Any mutation from anywhere — including the list panel, which owns no
 		// layer of its own — has to reach the on-page rendering. Without this,
 		// deleting or editing a note in the panel updated the panel and the file
@@ -97,19 +120,22 @@ export class PdfAnnotationsController {
 		// (Layer rebuilds are debounced and skip while a note is being dragged or
 		// edited, so the extra churn from in-layer edits is harmless.)
 		this.plugin.register(this.store.onChange(() => this.rebuildAll()));
+		this.fileLifecycle.register();
 
-		this.app.workspace.onLayoutReady(() => this.scanPDFViews());
+		this.app.workspace.onLayoutReady(() => {
+			this.scanPDFViews();
+			void this.recheckChangedSharedFiles();
+			this.fileLifecycle.onLayoutReady();
+		});
+		this.plugin.register(() => {
+			for (const timer of this.layoutRecheckTimers.values()) window.clearTimeout(timer);
+			this.layoutRecheckTimers.clear();
+		});
 		this.plugin.registerEvent(this.app.workspace.on("layout-change", () => this.scanPDFViews()));
 		this.plugin.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
 				this.scanPDFViews();
 				this.targetPdfView(); // refresh the remembered PDF while one has focus
-			})
-		);
-		// Plain path-string keys would otherwise orphan a file's notes on rename/move.
-		this.plugin.registerEvent(
-			this.app.vault.on("rename", (file, oldPath) => {
-				if (file instanceof TFile && file.extension === "pdf") this.store.renameFile(oldPath, file.path);
 			})
 		);
 		// The rail is positioned against the visible width of the pane, so a pane
@@ -120,10 +146,13 @@ export class PdfAnnotationsController {
 	async saveSettings(next: PdfAnnotationSettings): Promise<void> {
 		const pathChanged = next.dataPath !== this.settings.dataPath;
 		this.settings = next;
+		if (this.activeLayerId && !next.layers.some((layer) => layer.id === this.activeLayerId)) {
+			this.activeLayerId = null;
+		}
 		applyPdfAnnotationStyleSettings(this.settings);
 		await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
 		if (pathChanged) await this.store.relocate(next.dataPath);
-		this.rebuildAll();
+		this.store.notifyAppearanceChanged();
 	}
 
 	/** Partial update used by in-canvas affordances (e.g. dragging the rail wider). */
@@ -155,6 +184,102 @@ export class PdfAnnotationsController {
 		).open();
 	}
 
+	get annotationLayerFilter(): string | null {
+		return this.activeLayerId;
+	}
+
+	get activeAnnotationLayerName(): string {
+		return this.settings.layers.find((layer) => layer.id === this.activeLayerId)?.name ?? "全部";
+	}
+
+	setAnnotationLayerFilter(layerId: string | null): void {
+		const next = layerId && this.settings.layers.some((layer) => layer.id === layerId) ? layerId : null;
+		if (next === this.activeLayerId) return;
+		this.activeLayerId = next;
+		this.store.notifyAppearanceChanged();
+	}
+
+	chooseAnnotationLayer(): void {
+		new AnnotationLayerPicker(this.app, this.settings.layers, this.activeLayerId, (id) =>
+			this.setAnnotationLayerFilter(id)
+		).open();
+	}
+
+	/** Current PDF and every member sharing its page layout use the same list order. */
+	toggleDoubleColumnOrder(): void {
+		const file = this.currentPdfTarget();
+		if (!file) return;
+		const members = this.store.sharedMembers(file.path);
+		const paths = members.length > 0 ? members : [file.path];
+		const currentSplit = paths.map((path) => this.settings.doubleColumnSplits[path]).find((value) => value !== undefined);
+		const next = { ...this.settings.doubleColumnSplits };
+		if (currentSplit !== undefined) {
+			for (const path of paths) delete next[path];
+			this.patchSettings({ doubleColumnSplits: next });
+			new Notice("当前论文的批注阅读顺序已设为单栏：从上到下");
+			return;
+		}
+
+		const split = this.visiblePageMidpoint(file.path);
+		if (split === null) {
+			new Notice("PDF 页面仍在加载；显示出页面后再运行一次双栏排序命令");
+			return;
+		}
+		for (const path of paths) next[path] = split;
+		this.patchSettings({ doubleColumnSplits: next });
+		new Notice(paths.length > 1 ? `共享组已设为双栏阅读顺序（${paths.length} 份 PDF）` : "当前论文已设为双栏阅读顺序");
+	}
+
+	isDoubleColumnOrder(pdfPath: string): boolean {
+		return this.doubleColumnSplit(pdfPath) !== undefined;
+	}
+
+	sortAnnotations(pdfPath: string, annotations: PdfAnnotation[]): PdfAnnotation[] {
+		return sortAnnotationsForReading(annotations, this.doubleColumnSplit(pdfPath));
+	}
+
+	private doubleColumnSplit(pdfPath: string): number | undefined {
+		const direct = this.settings.doubleColumnSplits[pdfPath];
+		if (direct !== undefined) return direct;
+		for (const member of this.store.sharedMembers(pdfPath)) {
+			const shared = this.settings.doubleColumnSplits[member];
+			if (shared !== undefined) return shared;
+		}
+		return undefined;
+	}
+
+	private visiblePageMidpoint(pdfPath: string): number | null {
+		for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+			const state = this.states.get(leaf.view as FileView);
+			if (!state || state.currentPath() !== pdfPath) continue;
+			const page = state.pages.values().next().value as PDFPageView | undefined;
+			if (!page?.pdfPage?.view) continue;
+			const [left, , right] = page.pdfPage.view;
+			return (left + right) / 2;
+		}
+		return null;
+	}
+
+	openLayerFilterMenu(at: { x: number; y: number }): void {
+		const menu = new Menu();
+		appendLayerFilterMenuItems(menu, this.settings.layers, this.activeLayerId, (id) =>
+			this.setAnnotationLayerFilter(id)
+		);
+		menu.showAtPosition(at);
+	}
+
+	openAnnotationLayerMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
+		const menu = new Menu();
+		appendAnnotationLayerMenuItems(menu, this.settings.layers, ann, (next) => {
+			const current = this.store.forFile(pdfPath).find((item) => item.id === ann.id);
+			if (!current) return;
+			current.layerIds = next;
+			current.updatedAt = Date.now();
+			this.store.upsert(pdfPath, current);
+		});
+		menu.showAtPosition(at);
+	}
+
 	/**
 	 * The PDF view to act on: the active one if a PDF has focus, otherwise the
 	 * last PDF that did — as long as it's still open somewhere.
@@ -178,6 +303,16 @@ export class PdfAnnotationsController {
 
 	hasActivePDFView(): boolean {
 		return !!getActivePDFView(this.app);
+	}
+
+	/** Also true while the annotation list has focus but its source PDF remains open. */
+	hasPdfTarget(): boolean {
+		return !!this.currentPdfTarget();
+	}
+
+	canLeaveSharedGroup(): boolean {
+		const file = this.currentPdfTarget();
+		return !!file && this.store.isPaired(file.path);
 	}
 
 	/**
@@ -241,90 +376,27 @@ export class PdfAnnotationsController {
 		new Notice(quote ? "已更新高亮位置(记住了选中的文字,可跨译文/原文定位)" : "已更新这条批注的高亮位置");
 	}
 
-	/**
-	 * Records what we can see of the open document (page count, page box, script
-	 * mix) — this side is always read off the live viewer, no separate load.
-	 * Hands off to tryAutoPair, which fingerprints the OTHER side headlessly if
-	 * it needs to (see headlessFingerprintCandidate).
-	 */
-	private captureFingerprint(view: FileView, path: string, state: ViewState): void {
-		if (!state.sampler.hasSample) return;
-		const pageView = state.pages.values().next().value;
-		const doc = getPdfDocument(view);
-		if (!pageView?.pdfPage?.view || !doc) return;
-
-		const [x0, y0, x1, y1] = pageView.pdfPage.view;
-		const fp: PdfFingerprint = {
-			pages: doc.numPages,
-			width: Math.round(x1 - x0),
-			height: Math.round(y1 - y0),
-			cjk: state.sampler.ratio,
-		};
-		this.store.setFingerprint(path, fp);
-		this.tryAutoPair(path, fp);
-	}
-
-	/**
-	 * Links `path` to a same-named counterpart whose fingerprint proves it's a
-	 * translation with the same layout.
-	 *
-	 * A candidate that hasn't been fingerprinted yet doesn't just get skipped —
-	 * it's fetched headlessly (no tab, no visible view) so pairing completes
-	 * without the user ever having to manually open the other side. This only
-	 * runs after `path` itself was just fingerprinted, which means a PDF has
-	 * already been opened this session, which is the one precondition
-	 * `headlessFingerprint` needs (`window.pdfjsLib` loads lazily on first PDF
-	 * open) — so by the time this fires, it's essentially always available.
-	 */
-	private tryAutoPair(path: string, fp: PdfFingerprint): void {
-		if (this.store.isPaired(path)) return;
-		for (const candidate of findNameCandidates(this.app, path)) {
-			const other = this.store.getFingerprint(candidate);
-			if (other) {
-				if (this.completePairIfMatch(path, fp, candidate, other)) return;
-				continue;
-			}
-			this.headlessFingerprintCandidate(path, fp, candidate);
-		}
-	}
-
-	private completePairIfMatch(path: string, fp: PdfFingerprint, candidate: string, other: PdfFingerprint): boolean {
-		if (!fingerprintsPair(fp, other)) return false;
-		this.store.pair(path, candidate, canonicalOf(path, fp, candidate, other));
-		new Notice(`已自动关联原文/译文,批注共用:\n${candidate.split("/").pop()}`);
-		return true;
-	}
-
-	/**
-	 * In-flight headless fetches, keyed by candidate path — a Map of Promises
-	 * rather than a Set of booleans so two things can share it: dedup (opening a
-	 * PDF twice, or two name-candidates both pointing at the same unfingerprinted
-	 * file, shouldn't fetch it twice) AND `switchToCounterpart` being able to
-	 * actually *wait* on one instead of just checking whether it's running.
-	 */
-	private headlessInFlight = new Map<string, Promise<void>>();
-
-	private headlessFingerprintCandidate(path: string, fp: PdfFingerprint, candidate: string): Promise<void> {
-		const existing = this.headlessInFlight.get(candidate);
-		if (existing) return existing;
-		const file = this.app.vault.getAbstractFileByPath(candidate);
-		if (!isPdf(file)) return Promise.resolve();
-
-		const promise = headlessFingerprint(this.app, file)
-			.then((other) => {
-				if (!other) return;
-				this.store.setFingerprint(candidate, other);
-				if (!this.store.isPaired(path)) this.completePairIfMatch(path, fp, candidate, other);
-			})
-			.finally(() => this.headlessInFlight.delete(candidate));
-		this.headlessInFlight.set(candidate, promise);
-		return promise;
-	}
-
-	/** The paired original/translation of the PDF in focus, if any. */
-	counterpartOfActive(): string | null {
+	/** All PDFs in the active file's shared group, including itself. */
+	sharedMembersOfActive(): string[] {
 		const file = this.currentPdfTarget();
-		return file ? this.store.counterpartOf(file.path) : null;
+		return file ? this.store.sharedMembers(file.path) : [];
+	}
+
+	/** Current PDF first; otherwise the first shared member with a non-empty outline. */
+	async sharedOutline(pdfPath: string): Promise<SharedOutlineResult> {
+		const candidates = [pdfPath, ...this.store.sharedMembers(pdfPath).filter((path) => path !== pdfPath)];
+		let firstError: string | undefined;
+		for (const path of candidates) {
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (!isPdf(file)) continue;
+			try {
+				const items = await this.outlineReader.read(file);
+				if (outlineHasDestination(items)) return { sourcePath: path, items };
+			} catch (error) {
+				firstError ??= String(error instanceof Error ? error.message : error);
+			}
+		}
+		return { sourcePath: null, items: [], error: firstError };
 	}
 
 	/**
@@ -347,77 +419,221 @@ export class PdfAnnotationsController {
 		state?.layer.endHoverHighlight();
 	}
 
-	/** Names the specific check that stopped a pairing, so it can be acted on. */
-	private explainNoCounterpart(path: string): string {
-		const candidates = findNameCandidates(this.app, path);
-		if (candidates.length === 0) {
-			return "没有找到名字相近的另一份 PDF。\n可以用「手动关联」命令直接指定。";
-		}
-		const mine = this.store.getFingerprint(path);
-		if (!mine) {
-			return "当前 PDF 还没采集到指纹(等文字层渲染完再试一次)。";
-		}
-		const unfingerprinted = candidates.filter((c) => !this.store.getFingerprint(c));
-		if (unfingerprinted.length > 0) {
-			const stillFetching = unfingerprinted.some((c) => this.headlessInFlight.has(c));
-			return stillFetching
-				? `找到候选:${unfingerprinted[0].split("/").pop()}\n正在后台读取它的页数/语种,马上再试一次。`
-				: `找到候选:${unfingerprinted[0].split("/").pop()}\n但读取失败了(可能不是有效 PDF,或读取时出错)。\n可以用「手动关联」命令跳过校验直接指定。`;
-		}
-		for (const c of candidates) {
-			const other = this.store.getFingerprint(c)!;
-			if (!sameGeometry(mine, other)) {
-				return `候选 ${c.split("/").pop()} 的页数/尺寸和当前文件不一致(${mine.pages}页 ${mine.width}×${mine.height} vs ${other.pages}页 ${other.width}×${other.height}),排版对不上,不能共用坐标。`;
-			}
-			if (!differentLanguage(mine, other)) {
-				return `候选 ${c.split("/").pop()} 看起来和当前文件是同一种语言(中文占比 ${mine.cjk.toFixed(2)} vs ${other.cjk.toFixed(2)}),不像原文/译文。\n确实要共用批注的话用「手动关联」命令。`;
-			}
-		}
-		return "找到候选但未通过校验,可用「手动关联」命令强制指定。";
+	private explainNoCounterpart(): string {
+		return "当前 PDF 尚未加入共享组。\n请运行「[PDF] 添加 PDF 到共享批注组」。";
 	}
 
-	/** Pairs the active PDF with an explicitly chosen file, skipping every check —
-	 * the escape hatch for when auto-detection is wrong or too conservative. */
-	pairManually(otherPath: string): void {
+	private queueSharedLayoutRecheck(pdfPath: string): void {
+		if (!this.store.isPaired(pdfPath)) return;
+		const previous = this.layoutRecheckTimers.get(pdfPath);
+		if (previous !== undefined) window.clearTimeout(previous);
+		const timer = window.setTimeout(() => {
+			this.layoutRecheckTimers.delete(pdfPath);
+			void this.recheckSharedMember(pdfPath, new Set([pdfPath]), true);
+		}, SHARED_LAYOUT_RECHECK_DELAY_MS);
+		this.layoutRecheckTimers.set(pdfPath, timer);
+	}
+
+	/** Recheck members whose binary revision changed while the plugin was closed. */
+	private async recheckChangedSharedFiles(): Promise<void> {
+		const changed = this.store.changedSharedMembers();
+		if (changed.length === 0) return;
+		const changedSet = new Set(changed);
+		const processed = new Set<string>();
+		let detached = 0;
+		for (const path of changed) {
+			if (processed.has(path) || !this.store.isPaired(path)) continue;
+			const members = this.store.sharedMembers(path);
+			for (const member of members) processed.add(member);
+			const unchangedReference = members.find((member) => !changedSet.has(member));
+			if (unchangedReference) {
+				for (const member of members) {
+					if (!changedSet.has(member)) continue;
+					const result = await this.recheckSharedMember(member, changedSet, false);
+					if (result === "detached") detached++;
+				}
+			} else {
+				detached += await this.recheckEntireChangedGroup(members);
+			}
+		}
+		if (detached > 0) {
+			new Notice(`有 ${detached} 份 PDF 的页面版式确实发生变化，已退出共享组并保留批注副本。`, 9000);
+		}
+	}
+
+	/**
+	 * When sync rewrites every member, revision markers cannot identify the one
+	 * that changed layout. Keep the largest mutually compatible coordinate set;
+	 * a binary mismatch or a group with no compatible pair naturally dissolves.
+	 */
+	private async recheckEntireChangedGroup(members: string[]): Promise<number> {
+		const files = members.map((path) => this.app.vault.getAbstractFileByPath(path));
+		if (!files.every(isPdf)) return 0;
+		const pdfs = files as TFile[];
+		const before = pdfs.map((file) => ({ mtime: file.stat.mtime, size: file.stat.size }));
+		const layouts = await Promise.all(pdfs.map((file) => readPdfLayout(this.app, file)));
+		if (layouts.some((layout) => layout === null)) return 0;
+		if (
+			pdfs.some(
+				(file, index) => file.stat.mtime !== before[index].mtime || file.stat.size !== before[index].size
+			)
+		) {
+			for (const path of members) this.queueSharedLayoutRecheck(path);
+			return 0;
+		}
+		if (!members.every((path) => this.store.sharedMembers(members[0]).includes(path))) return 0;
+
+		const cluster = largestCompatibleLayoutCluster(layouts as NonNullable<(typeof layouts)[number]>[]);
+		if (cluster.length === members.length) {
+			for (const path of members) this.store.acceptCurrentRevision(path);
+			return 0;
+		}
+
+		const keep = cluster.length >= 2 ? new Set(cluster.map((index) => members[index])) : new Set<string>();
+		let detached = 0;
+		for (const path of members) {
+			if (keep.has(path) || !this.store.isPaired(path)) continue;
+			if (this.store.leaveGroup(path)) detached++;
+		}
+		for (const path of keep) this.store.acceptCurrentRevision(path);
+		if (detached > 0) this.refreshNativeOutlines();
+		return detached;
+	}
+
+	/**
+	 * Compare the changed member with a group peer. An unchanged peer is the
+	 * preferred reference after startup; if every member changed, any peer still
+	 * proves whether their current coordinate systems remain compatible.
+	 */
+	private async recheckSharedMember(
+		pdfPath: string,
+		changedPaths: ReadonlySet<string>,
+		announce: boolean
+	): Promise<"kept" | "detached" | "skipped"> {
+		const file = this.app.vault.getAbstractFileByPath(pdfPath);
+		if (!isPdf(file) || !this.store.isPaired(pdfPath)) return "skipped";
+		const members = this.store.sharedMembers(pdfPath);
+		const otherPath =
+			members.find((path) => path !== pdfPath && !changedPaths.has(path)) ??
+			members.find((path) => path !== pdfPath);
+		if (!otherPath) return "skipped";
+		const other = this.app.vault.getAbstractFileByPath(otherPath);
+		if (!isPdf(other)) return "skipped";
+
+		const before = {
+			fileMtime: file.stat.mtime,
+			fileSize: file.stat.size,
+			otherMtime: other.stat.mtime,
+			otherSize: other.stat.size,
+		};
+		const layout = await comparePdfLayouts(this.app, file, other);
+		if (
+			file.stat.mtime !== before.fileMtime ||
+			file.stat.size !== before.fileSize ||
+			other.stat.mtime !== before.otherMtime ||
+			other.stat.size !== before.otherSize
+		) {
+			this.queueSharedLayoutRecheck(pdfPath);
+			return "skipped";
+		}
+		// The user may have changed the group while pdf.js was reading both files.
+		if (!this.store.sharedMembers(pdfPath).includes(otherPath)) return "skipped";
+		if (layout.status === "unreadable") return "skipped";
+		if (layout.compatible) {
+			this.store.acceptCurrentRevision(pdfPath);
+			return "kept";
+		}
+
+		if (!this.store.leaveGroup(pdfPath)) return "skipped";
+		this.refreshNativeOutlines();
+		if (announce) {
+			new Notice(`PDF 页面版式已变化，已退出共享组并保留批注副本：\n${file.basename}\n${layout.reason}`, 9000);
+		}
+		return "detached";
+	}
+
+	/** Checks layout, then asks only when both sides contain different notes. */
+	async pairManually(otherPath: string): Promise<void> {
 		const file = this.currentPdfTarget();
 		if (!file) return;
-		const mine = this.store.getFingerprint(file.path);
-		const other = this.store.getFingerprint(otherPath);
-		// Prefer the source language as the bucket name when we can tell.
-		const canonical = mine && other ? canonicalOf(file.path, mine, otherPath, other) : otherPath;
-		this.store.pair(file.path, otherPath, canonical);
-		new Notice(`已手动关联,批注共用:\n${otherPath.split("/").pop()}`);
+		const other = this.app.vault.getAbstractFileByPath(otherPath);
+		if (!isPdf(other)) {
+			new Notice(`找不到要关联的 PDF:${otherPath}`);
+			return;
+		}
+		const checking = new Notice("正在检查两份 PDF 的页数和页面尺寸…", 0);
+		const layout = await comparePdfLayouts(this.app, file, other);
+		checking.hide();
+		if (!layout.compatible) {
+			new Notice(`无法加入共享组：${layout.reason}`, 9000);
+			return;
+		}
+		if (!this.store.annotationConflict(file.path, other.path)) {
+			this.applyPairDecision(file.path, other.path, { strategy: "merge" });
+			return;
+		}
+		new PairDecisionModal(
+			this.app,
+			{
+				currentPath: file.path,
+				otherPath: other.path,
+				currentCount: this.store.annotationCount(file.path),
+				otherCount: this.store.annotationCount(other.path),
+				layout,
+			},
+			(decision) => this.applyPairDecision(file.path, other.path, decision)
+		).open();
 	}
 
-	/** Name-similar PDFs, for the manual pairing picker. */
+	private applyPairDecision(currentPath: string, otherPath: string, decision: PairDecision): void {
+		const inheritedSplit = this.settings.doubleColumnSplits[currentPath] ?? this.settings.doubleColumnSplits[otherPath];
+		this.store.joinShared(currentPath, otherPath, decision.strategy);
+		if (inheritedSplit !== undefined) {
+			const next = { ...this.settings.doubleColumnSplits };
+			for (const path of this.store.sharedMembers(currentPath)) next[path] = inheritedSplit;
+			this.patchSettings({ doubleColumnSplits: next });
+		}
+		this.refreshNativeOutlines();
+		const count = this.store.sharedMembers(currentPath).length;
+		new Notice(`已加入共享批注组（${count} 份 PDF）:\n${otherPath.split("/").pop()}`);
+	}
+
+	/** Every other vault PDF, with name-similar choices ranked first. */
 	pairingCandidates(): string[] {
 		const file = this.currentPdfTarget();
 		if (!file) return [];
-		const named = findNameCandidates(this.app, file.path);
-		if (named.length > 0) return named;
-		// Nothing name-similar: offer every other PDF rather than a dead end.
-		return this.app.vault
-			.getFiles()
-			.filter((f) => f.extension === "pdf" && f.path !== file.path)
-			.map((f) => f.path);
+		const members = new Set(this.store.sharedMembers(file.path));
+		return listPairingCandidates(this.app, file.path).filter((path) => !members.has(path));
 	}
 
 	unpairActive(): void {
 		const file = this.currentPdfTarget();
 		if (!file) return;
 		if (!this.store.isPaired(file.path)) {
-			new Notice("当前 PDF 没有关联");
+			new Notice("当前 PDF 不在共享批注组中");
 			return;
 		}
-		this.store.unpair(file.path);
-		new Notice("已解除关联(批注留在原文那一侧)");
+		const before = this.store.sharedMembers(file.path).length;
+		this.store.leaveGroup(file.path);
+		this.refreshNativeOutlines();
+		new Notice(
+			before > 2
+				? `当前 PDF 已退出共享组并保留批注副本;其余 ${before - 1} 份继续共享`
+				: "已解除共享;两份 PDF 都保留当前批注副本"
+		);
+	}
+
+	/** Next member in insertion order; with two PDFs this is the ordinary flip. */
+	private nextSharedMember(pdfPath: string): string | null {
+		const members = this.store.sharedMembers(pdfPath);
+		if (members.length < 2) return null;
+		const index = members.indexOf(pdfPath);
+		return members[(index + 1 + members.length) % members.length] ?? null;
 	}
 
 	/**
-	 * Flips to the paired translation/original, landing on the same page and the
-	 * same fraction down that page — the layouts match closely enough (measured
-	 * on this vault: 1pt median vertical drift, 93% of blocks within one line)
-	 * that this reads as switching language in place.
+	 * Cycles to the next member at the same page and fraction. Every group member
+	 * passed the full layout check when it joined.
 	 *
 	 * "Smooth" here means two honest things, not a crossfade between the two
 	 * documents' actual content — pdf.js tears down and re-renders the page
@@ -439,14 +655,15 @@ export class PdfAnnotationsController {
 	async openCounterpartInSplit(): Promise<void> {
 		const file = this.currentPdfTarget();
 		if (!file) return;
-		const other = this.store.counterpartOf(file.path);
+		const other = this.nextSharedMember(file.path);
 		if (!other) {
-			this.explainNoCounterpart(file.path);
+			new Notice(this.explainNoCounterpart(), 6000);
 			return;
 		}
 		const target = this.app.vault.getAbstractFileByPath(other);
 		if (!(target instanceof TFile)) {
-			new Notice(`找不到配对的文件:${other}`);
+			this.store.detachFile(other);
+			new Notice(`共享组成员已不存在，已自动移除:${other}`);
 			return;
 		}
 		const existing = this.app.workspace
@@ -464,31 +681,15 @@ export class PdfAnnotationsController {
 		const file = this.currentPdfTarget();
 		if (!view || !file) return;
 
-		let other = this.store.counterpartOf(file.path);
+		const other = this.nextSharedMember(file.path);
 		if (!other) {
-			// Retry the match now (the other side may have been opened since, or
-			// this call is itself what kicks off its headless fetch), and if a
-			// fetch is running for a name-candidate, actually wait on it rather
-			// than immediately reporting "not paired yet" — this is the difference
-			// between the switch command working on the first try vs. needing a
-			// second press a moment later.
-			const fp = this.store.getFingerprint(file.path);
-			if (fp) {
-				this.tryAutoPair(file.path, fp);
-				other = this.store.counterpartOf(file.path);
-				if (!other) {
-					const pending = findNameCandidates(this.app, file.path)
-						.map((c) => this.headlessInFlight.get(c))
-						.filter((p): p is Promise<void> => !!p);
-					if (pending.length > 0) {
-						await Promise.race([Promise.all(pending), new Promise((r) => window.setTimeout(r, 4000))]);
-						other = this.store.counterpartOf(file.path);
-					}
-				}
-			}
+			new Notice(this.explainNoCounterpart(), 6000);
+			return;
 		}
-		if (!other) {
-			new Notice(this.explainNoCounterpart(file.path), 8000);
+		const target = this.app.vault.getAbstractFileByPath(other);
+		if (!isPdf(target)) {
+			this.store.detachFile(other);
+			new Notice(`共享组成员已不存在，已自动移除:${other}`);
 			return;
 		}
 
@@ -504,7 +705,7 @@ export class PdfAnnotationsController {
 		const container = view.containerEl;
 		container.addClass("margin-notes-pdf-switching");
 
-		await this.app.workspace.openLinkText(`${other}#page=${page}`, "", false);
+		await this.app.workspace.openLinkText(`${target.path}#page=${page}`, "", false);
 
 		window.setTimeout(() => {
 			if (fraction !== null) this.applyPageFraction(page, fraction);
@@ -576,6 +777,38 @@ export class PdfAnnotationsController {
 		}, 350);
 	}
 
+	/** Opens an inherited outline destination in the PDF currently being read. */
+	async revealOutlineTarget(pdfPath: string, target: PdfOutlineItem): Promise<void> {
+		if (target.page === null) return;
+		const existing = this.app.workspace
+			.getLeavesOfType("pdf")
+			.find((leaf) => (leaf.view as FileView).file?.path === pdfPath);
+		if (existing) {
+			this.app.workspace.setActiveLeaf(existing, { focus: true });
+			existing.view.setEphemeralState({ subpath: `#page=${target.page}` });
+		} else {
+			await this.app.workspace.openLinkText(`${pdfPath}#page=${target.page}`, "", false);
+		}
+		if (target.topRatio === null) return;
+		const topRatio = target.topRatio;
+
+		const position = (attempt: number) => {
+			const view = this.targetPdfView();
+			const state = view ? this.states.get(view) : null;
+			const pageView = state?.currentPath() === pdfPath ? state.pages.get(target.page!) : null;
+			if (!pageView?.div.isConnected) {
+				if (attempt < 4) window.setTimeout(() => position(attempt + 1), 180);
+				return;
+			}
+			const scroller = findScrollAncestor(pageView.div);
+			const pageRect = pageView.div.getBoundingClientRect();
+			const scrollerRect = scroller.getBoundingClientRect();
+			const destination = pageRect.top + pageRect.height * topRatio;
+			scroller.scrollBy({ top: destination - scrollerRect.top - 36, behavior: "smooth" });
+		};
+		window.setTimeout(() => position(0), 320);
+	}
+
 	private place(pdfPath: string, pageNumber: number, rect: PdfRect, form: NewNoteForm): void {
 		const ann: PdfAnnotation = {
 			id: makeAnnotationId(),
@@ -584,6 +817,7 @@ export class PdfAnnotationsController {
 			pinned: form.pinned,
 			collapsed: form.collapsed,
 			side: form.side,
+			layerIds: this.activeLayerId ? [this.activeLayerId] : undefined,
 			text: "",
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
@@ -600,6 +834,12 @@ export class PdfAnnotationsController {
 			const state = this.states.get(leaf.view as FileView);
 			const path = state?.currentPath();
 			if (state && path) state.layer.rebuild(path, state.pages);
+		}
+	}
+
+	private refreshNativeOutlines(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+			this.states.get(leaf.view as FileView)?.outlineBridge.refresh();
 		}
 	}
 
@@ -650,6 +890,7 @@ export class PdfAnnotationsController {
 			component,
 			this.store,
 			() => this.settings,
+			() => this.activeLayerId,
 			(patch) => this.patchSettings(patch),
 			(pdfPath, ann) => this.reanchor(pdfPath, ann)
 		);
@@ -668,10 +909,12 @@ export class PdfAnnotationsController {
 			return file.path;
 		};
 
-		const state: ViewState = { pages, layer, currentPath, sampler: new ScriptSampler() };
+		const outlineBridge = new NativeOutlineBridge(view, component, currentPath, (path) => this.sharedOutline(path));
+		const state: ViewState = { pages, layer, currentPath, outlineBridge };
 		this.states.set(view, state);
 		component.register(() => layer.destroy());
 		this.attachUndoKeys(view, component);
+		onScaleChanging(view, component, () => layer.beginZoom());
 
 		const trackedPageDivs = new WeakSet<HTMLDivElement>();
 
@@ -708,25 +951,6 @@ export class PdfAnnotationsController {
 			const path = currentPath();
 			if (!path) return;
 			layer.rebuild(path, pages);
-
-			// The text layer is also a free sample of what script this document is
-			// written in — all counterpart detection needs, no extra parsing.
-			// Read the rendered spans rather than `textContentItems`: that field is
-			// declared in the mirrored pdf.js types but nothing else ever exercises
-			// it, so its presence across Obsidian versions is unverified, whereas
-			// getTextLayerInfo() has already established that textDivs exists.
-			if (!state.sampler.done) {
-				const info = getTextLayerInfo(pageView);
-				if (info?.textDivs) {
-					state.sampler.add(
-						pageNumber,
-						info.textDivs.map((d) => d.textContent ?? "")
-					);
-					// Write on every sampled page, not only once the sample is
-					// "complete" — see ScriptSampler.done.
-					this.captureFingerprint(view, path, state);
-				}
-			}
 		});
 	}
 }

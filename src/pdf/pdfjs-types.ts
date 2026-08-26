@@ -18,6 +18,12 @@ export interface PDFPageProxy {
 	view: [number, number, number, number];
 }
 
+export interface PDFDocumentProxy {
+	numPages?: number;
+	getOutline(): Promise<unknown[] | null>;
+	getPage(pageNumber: number): Promise<PDFPageProxy>;
+}
+
 export interface TextLayerInfo {
 	textDivs: HTMLElement[];
 	textContentItems: { str: string }[];
@@ -39,23 +45,27 @@ export interface PDFEventBus {
 	off(name: string, cb: (data: any) => void): void;
 }
 
-export interface PDFDocumentProxy {
-	numPages: number;
-}
-
 export interface PDFViewer {
 	_pages: PDFPageView[];
 	eventBus: PDFEventBus;
+	pdfDocument?: PDFDocumentProxy;
 	getPageView(index: number): PDFPageView | undefined;
 	currentPageNumber: number;
-	pdfDocument?: PDFDocumentProxy;
+}
+
+export interface PDFOutlineViewer {
+	/** pdf.js 4/5 and current Obsidian (1.13.x). */
+	renderTree?(args: { outline: unknown[] | null; pdfDocument: PDFDocumentProxy }): void;
+	/** Older pdf.js bundled by earlier Obsidian releases. */
+	render?(args: { outline: unknown[] | null; pdfDocument: PDFDocumentProxy }): void;
 }
 
 // Obsidian's wrapper around the real pdf.js PDFViewerApplication-like object.
 export interface ObsidianViewer {
 	pdfViewer: PDFViewer;
-	eventBus: PDFEventBus;
 	pdfDocument?: PDFDocumentProxy;
+	pdfOutlineViewer?: PDFOutlineViewer;
+	eventBus: PDFEventBus;
 }
 
 export interface PDFViewerChild {

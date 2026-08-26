@@ -1,30 +1,29 @@
-import { Menu, Notice, type App, type Component } from "obsidian";
+import { loadMathJax, MarkdownRenderer, Menu, Notice, type App, type Component } from "obsidian";
 import { resolveCollisions } from "../collision-avoidance";
 import { buildAnnotationBox, type AnnotationBoxHandle } from "./annotation-box";
-import { darken, highlightsBothWays, type PdfAnnotationSettings } from "./annotation-settings";
+import { AnnotationGestureController } from "./annotation-gestures";
+import { LeftAnnotationSpace, OUTER_MARGIN_PX, requiredLeftGutter, type LeftSpaceDemand } from "./annotation-space";
+import { appendAnnotationLayerMenuItems } from "./annotation-layer-menus";
+import { annotationVisibleInLayer } from "./annotation-layers";
+import { darken, highlightsBothWays, resolveAnnotationColor, type PdfAnnotationSettings } from "./annotation-settings";
+import { adaptiveLeaderEndpoints, leaderVisible } from "./leader-geometry";
 import { openSwatchPicker } from "./swatch-picker";
 import type { PdfAnnotationStore } from "./annotation-store";
 import { DEFAULT_FREE_WIDTH_PCT, type MarginSide, type PdfAnnotation } from "./annotation-types";
+import {
+	anchorTop as pageAnchorTop,
+	defaultFreeXPct,
+	defaultFreeYPct,
+	freeLeft,
+	measurePageBox,
+	type PageBox,
+} from "./page-geometry";
 import type { PdfRect } from "./pdf-layer";
 import type { PDFPageView } from "./pdfjs-types";
 import { resolveQuoteAnchor } from "./quote-anchor";
+import { railCollisionGapPx, railGapPt, railLeft, railWidthPt } from "./rail-layout";
 import { findScrollAncestor } from "./scroll-container";
-
-/**
- * Floors an x at the scroll container's origin. Nothing can scroll to a
- * negative offset, so an element placed at x < 0 is not merely off-screen —
- * it is permanently unreachable, no matter how far the user scrolls. The left
- * rail has always been clamped this way; free notes were not, which is how a
- * note dragged into the gutter beside a page could vanish for good once the
- * gutter shrank (a zoom-in, a narrower pane, a wider page).
- *
- * Clamping means such a note can end up overlapping the page's left edge
- * instead of sitting beside it — deliberately preferred over being invisible,
- * since from there it can be seen and dragged somewhere better.
- */
-function reachableX(x: number): number {
-	return Math.max(0, x);
-}
+import { AnnotationZoomLifecycle } from "./zoom-lifecycle";
 
 /** `[0,0,0,0]` marks a record whose anchor still needs to be looked up from `quote`. */
 function isUnresolvedAnchor(anchor: PdfRect): boolean {
@@ -32,69 +31,10 @@ function isUnresolvedAnchor(anchor: PdfRect): boolean {
 }
 
 const LAYER_CLASS = "margin-notes-pdf-layer";
-/** Minimum vertical gap between two rail notes, in PDF points (scaled by zoom
- * where it's used) — not raw px, or it would look cramped zoomed in and
- * oversized zoomed out relative to the (zoom-scaled) text around it. */
-const MIN_GAP = 8;
-/** Blank space kept past the outermost note, so it never sits under the viewer's scrollbar. */
-const OUTER_MARGIN_PX = 28;
-/** Keep in sync with `.margin-notes-pdf-dot`'s size in styles.css. */
-const DOT_SIZE_PX = 12;
-/** Floors, in PDF points. Kept genuinely small — these are a "don't collapse to
- * nothing" guard, not a taste judgement about how narrow a note may be. They
- * must stay <= the settings sliders' minimums, or the bottom of a slider
- * silently does nothing (which is exactly what a 130 floor under a 110 slider
- * used to do). */
-const MIN_RAIL_WIDTH_PT = 50;
-const MIN_FREE_WIDTH_PT = 40;
-const MIN_HEIGHT_PX = 20;
 const REBUILD_DEBOUNCE_MS = 60;
 /** How far OUTSIDE the highlight the pointer has to stray before it is worth
  * explaining that the arrow cannot leave it. Below this it reads as a slip. */
 const REANCHOR_HINT_PX = 24;
-/** Movement below this keeps a press a click rather than a drag. */
-const TAP_SLOP_PX = 4;
-/**
- * The page width every size setting is expressed against, in points — US Letter,
- * which is what essentially every paper this is used on declares. A file with a
- * different media box is normalised to it (see PageBox.unit), so "rail width
- * 220" means the same fraction of the page in every document.
- */
-const REFERENCE_PAGE_WIDTH_PT = 612;
-
-/** Page geometry in scroll-container coordinates, plus the pt→px zoom factor. */
-interface PageBox {
-	left: number;
-	top: number;
-	width: number;
-	height: number;
-	/** PDF-point box of the page. */
-	ptX0: number;
-	ptX1: number;
-	ptWidth: number;
-	ptY0: number;
-	ptY1: number;
-	ptHeight: number;
-	/**
-	 * Rendered px per *reference* point — the factor every piece of note chrome
-	 * (rail width, gap, font size, manual nudges) is sized by instead of `zoom`.
-	 *
-	 * `zoom` alone was wrong across documents. A PDF point is not a fixed
-	 * physical size: it is whatever the file's media box says, and old scanned
-	 * papers routinely declare a page a fraction of the usual size. Such a page
-	 * has to be rendered at a much larger `zoom` to fill the same width on
-	 * screen — so anything sized in that document's points came out enormous,
-	 * which is exactly the "低分辨率老 PDF 上组件和字体特别大" report.
-	 *
-	 * Normalising by page width makes a setting mean the same *proportion of the
-	 * page* everywhere: a 220 rail is 220/612 of the page's width whether the
-	 * file calls that 612 points or 306. Absolute screen px would have been the
-	 * other candidate and is worse — it re-breaks what v0.11.0 fixed, with notes
-	 * no longer keeping their size relative to the text they annotate as you
-	 * zoom.
-	 */
-	unit: number;
-}
 
 interface Rail {
 	id: string;
@@ -150,6 +90,9 @@ export class AnnotationLayer {
 	private gen = 0;
 	private last: { pdfPath: string; pages: Map<number, PDFPageView> } | null = null;
 	private rebuildTimer = 0;
+	private leftSpace = new LeftAnnotationSpace();
+	private zoom: AnnotationZoomLifecycle;
+	private gestures: AnnotationGestureController;
 	/** Anchor rects in scroll coords, for `both` mode's reverse hover test. */
 	private hitAreas: { ann: PdfAnnotation; el: HTMLElement; x0: number; x1: number; y0: number; y1: number }[] = [];
 	private hoveredAnchorId: string | null = null;
@@ -167,11 +110,30 @@ export class AnnotationLayer {
 		private component: Component,
 		private store: PdfAnnotationStore,
 		private getSettings: () => PdfAnnotationSettings,
+		private getActiveLayerId: () => string | null,
 		private saveSettings: (patch: Partial<PdfAnnotationSettings>) => void,
 		/** Hands "re-pick this note's highlight" back to the controller, which owns
 		 * the selection/box-drag machinery. */
 		private requestReanchor: (pdfPath: string, ann: PdfAnnotation) => void
-	) {}
+	) {
+		this.zoom = new AnnotationZoomLifecycle(
+			() => this.isBusy(),
+			(hidden) => this.layer?.toggleClass("is-zooming", hidden),
+			() => {
+				if (!this.last) return false;
+				this.rebuild(this.last.pdfPath, this.last.pages);
+				return true;
+			}
+		);
+		this.gestures = new AnnotationGestureController({
+			getSettings: () => this.getSettings(),
+			saveSettings: (patch) => this.saveSettings(patch),
+			currentPageBox: (pageView) => this.currentPageBox(pageView),
+			mutate: (pdfPath, ann, fn) => this.mutate(pdfPath, ann, fn),
+			refresh: () => this.refresh(),
+			refreshLeader: (annotationId) => this.refreshLeader(annotationId),
+		});
+	}
 
 	private ensureLayer(anyPageDiv: HTMLElement): HTMLDivElement {
 		const scroller = findScrollAncestor(anyPageDiv);
@@ -181,7 +143,7 @@ export class AnnotationLayer {
 		// Hand the previous scroller back the padding we borrowed from it before
 		// losing the reference, or the old viewer keeps a gutter for a rail that
 		// is no longer there.
-		if (this.scroller && this.scroller !== scroller) this.applyLeftGutter(this.scroller, 0);
+		if (this.scroller && this.scroller !== scroller) this.leftSpace.clear(this.scroller);
 		// CM6's `.cm-scroller` gets `position: relative` from its own base theme;
 		// nothing gives the PDF viewer's scroller that for free.
 		if (getComputedStyle(scroller).position === "static") scroller.style.position = "relative";
@@ -190,6 +152,7 @@ export class AnnotationLayer {
 		this.scroller?.removeEventListener("contextmenu", this.onScrollerContextMenu);
 		const layer = scroller.createDiv(LAYER_CLASS);
 		layer.setCssStyles({ position: "absolute", top: "0", left: "0", pointerEvents: "none" });
+		layer.toggleClass("is-zooming", this.zoom.active);
 		this.layer = layer;
 		this.scroller = scroller;
 		scroller.addEventListener("mousemove", this.onScrollerMove);
@@ -200,6 +163,18 @@ export class AnnotationLayer {
 	/** True while a box is mid-edit — rebuilding would destroy the contentEditable. */
 	private isBusy(): boolean {
 		return !!this.layer?.querySelector(".is-editing, .is-dragging");
+	}
+
+	/**
+	 * Hides annotations for pdf.js's transient zoom frames. The page elements may
+	 * temporarily be CSS-scaled while this sibling layer still has coordinates
+	 * measured from the previous frame, so displaying either geometry produces a
+	 * visible drift. Once scale events have gone quiet, a forced rebuild measures
+	 * the final page boxes; only that completed layout makes the layer visible.
+	 */
+	beginZoom(): void {
+		window.clearTimeout(this.rebuildTimer);
+		this.zoom.begin();
 	}
 
 	/**
@@ -219,28 +194,6 @@ export class AnnotationLayer {
 		if (this.last) this.rebuild(this.last.pdfPath, this.last.pages);
 	}
 
-	private pageBox(pageView: PDFPageView, scroller: HTMLElement, scrollerRect: DOMRect): PageBox {
-		const r = pageView.div.getBoundingClientRect();
-		const [ptX0, ptY0, ptX1, ptY1] = pageView.pdfPage.view;
-		const ptHeight = ptY1 - ptY0;
-		return {
-			left: r.left - scrollerRect.left + scroller.scrollLeft,
-			top: r.top - scrollerRect.top + scroller.scrollTop,
-			width: r.width,
-			height: r.height,
-			ptX0,
-			ptX1,
-			ptWidth: ptX1 - ptX0,
-			ptY0,
-			ptY1,
-			ptHeight,
-			// Anchor coordinates reach the screen as plain ratios of the page box
-			// (see anchorTop / drawAnchorMark), so no px-per-point factor is needed
-			// for them; `unit` is only for chrome.
-			unit: r.width > 0 ? r.width / REFERENCE_PAGE_WIDTH_PT : 1,
-		};
-	}
-
 	private async doRebuild(pdfPath: string, pages: Map<number, PDFPageView>): Promise<void> {
 		// `rebuild()` only checks isBusy() at the moment it SCHEDULES this call —
 		// if a drag/resize/edit starts during the debounce window (very possible:
@@ -255,11 +208,16 @@ export class AnnotationLayer {
 		const settings = this.getSettings();
 
 		const anyPage = [...pages.values()].find((p) => p.div?.isConnected && p.pdfPage?.view);
-		if (!anyPage) return;
+		if (!anyPage) {
+			this.zoom.finishIfSettled();
+			return;
+		}
 
 		const layer = this.ensureLayer(anyPage.div);
 		layer.empty();
 		this.hoverMark = null;
+		this.hoverPreview = null;
+		this.hoverPreviewId = null;
 		this.hitAreas = [];
 		this.hoveredAnchorId = null;
 		this.bands.clear();
@@ -273,9 +231,10 @@ export class AnnotationLayer {
 		for (const [pageNumber, pageView] of pages) {
 			if (!pageView.pdfPage?.view || !pageView.div.isConnected) continue;
 			for (const ann of this.store.forPage(pdfPath, pageNumber)) {
+				if (!annotationVisibleInLayer(ann, this.getActiveLayerId())) continue;
 				const rect = this.effectiveAnchor(pdfPath, ann, pageView);
 				if (ann.collapsed) {
-					built.push({ ann, pageView, rect, el: this.createDot(layer, pdfPath, ann) });
+					built.push({ ann, pageView, rect, el: this.createDot(layer, pdfPath, ann, pageView) });
 					continue;
 				}
 				const handle = this.createBox(layer, pdfPath, ann, pageView);
@@ -283,10 +242,19 @@ export class AnnotationLayer {
 				built.push({ ann, pageView, rect, el: handle.el });
 			}
 		}
-		if (built.length === 0) return;
+		if (built.length === 0) {
+			if (this.scroller) {
+				this.leftSpace.apply(this.scroller, null, 0);
+				this.leftSpace.commit(this.scroller);
+			}
+			this.zoom.finishIfSettled();
+			return;
+		}
 
-		// Position once with the geometry as it stands, so nothing flashes at 0,0…
-		this.layout(built, settings);
+		// Position boxes once with the geometry as it stands, so nothing flashes at
+		// 0,0. Decorations deliberately wait: Markdown/MathJax can change a box's
+		// height, and drawing a leader in both passes used to leave two DOM lines.
+		this.layout(built, settings, false);
 
 		// …then again after Markdown/MathJax resolves. Two reasons: box heights
 		// aren't final until then (collision avoidance needs real heights), and
@@ -300,16 +268,7 @@ export class AnnotationLayer {
 		// go and reposition (fight) whatever they're mid-drag on.
 		if (gen !== this.gen || this.isBusy()) return;
 		this.layout(built, settings);
-	}
-
-	/** Rail width/gap in PDF points for one side — left and right are independent
-	 * settings (they used to be one shared value, which is why resizing the left
-	 * rail used to silently move the right one too). */
-	private railWidthPt(settings: PdfAnnotationSettings, side: MarginSide): number {
-		return Math.max(MIN_RAIL_WIDTH_PT, side === "right" ? settings.railWidthRight : settings.railWidthLeft);
-	}
-	private railGapPt(settings: PdfAnnotationSettings, side: MarginSide): number {
-		return side === "right" ? settings.railGapRight : settings.railGapLeft;
+		this.zoom.finishIfSettled();
 	}
 
 	/**
@@ -335,13 +294,35 @@ export class AnnotationLayer {
 	 * now computed at a zoom-independent width — a note's text wraps identically
 	 * at every zoom level, so its height no longer changes at all.
 	 */
-	private layout(built: Placed[], settings: PdfAnnotationSettings): void {
+	private layout(built: Placed[], settings: PdfAnnotationSettings, renderDecorations = true): void {
 		const scroller = this.scroller;
 		if (!scroller) return;
 
-		// Reserve room for the left rail BEFORE measuring anything — it shifts the
-		// pages, so every rect read afterwards has to already account for it.
-		this.applyLeftGutter(scroller, this.leftGutterFor(built, settings, scroller));
+		// Reserve one shared left canvas before reading final page coordinates.
+		// Both a pinned left rail and a free note with negative freeX contribute;
+		// treating the latter as ordinary content is what avoids the old x=0 clamp.
+		const samplePage = built.find((item) => item.pageView.div.isConnected && item.pageView.pdfPage?.view)?.pageView;
+		const preliminaryRect = scroller.getBoundingClientRect();
+		const preliminaryBoxes = new Map<PDFPageView, PageBox>();
+		const demands: LeftSpaceDemand[] = [];
+		for (const item of built) {
+			if (!item.pageView.div.isConnected || !item.pageView.pdfPage?.view) continue;
+			let box = preliminaryBoxes.get(item.pageView);
+			if (!box) {
+				box = measurePageBox(item.pageView, scroller, preliminaryRect);
+				preliminaryBoxes.set(item.pageView, box);
+			}
+			if (item.ann.pinned && item.ann.side === "left") demands.push({ kind: "rail", unit: box.unit });
+			else if (!item.ann.pinned) {
+				const freeXPct = item.ann.freeX ?? defaultFreeXPct(item.rect, box);
+				if (freeXPct < 0) demands.push({ kind: "free", freeXPct, pageWidth: box.width });
+			}
+		}
+		this.leftSpace.apply(
+			scroller,
+			samplePage?.div.parentElement ?? null,
+			requiredLeftGutter(settings, demands)
+		);
 
 		const scrollerRect = scroller.getBoundingClientRect();
 		const boxes = new Map<PDFPageView, PageBox>();
@@ -352,27 +333,27 @@ export class AnnotationLayer {
 			if (!item.pageView.div.isConnected) continue;
 			let box = boxes.get(item.pageView);
 			if (!box) {
-				box = this.pageBox(item.pageView, scroller, scrollerRect);
+				box = measurePageBox(item.pageView, scroller, scrollerRect);
 				boxes.set(item.pageView, box);
 			}
 			const { ann, el, rect } = item;
 
 			if (ann.pinned) {
-				const widthPt = this.railWidthPt(settings, ann.side);
-				const left = this.railLeft(ann.side, box, widthPt * box.unit, this.railGapPt(settings, ann.side) * box.unit);
+				const widthPt = railWidthPt(settings, ann.side);
+				const left = railLeft(ann.side, box, widthPt * box.unit, railGapPt(settings, ann.side) * box.unit);
 				el.style.left = `${left}px`;
 				if (!ann.collapsed) {
 					this.scaleBox(el, widthPt, undefined, settings, ann, box);
 					maxRight = Math.max(maxRight, left + widthPt * box.unit);
 				} else {
-					maxRight = Math.max(maxRight, left + DOT_SIZE_PX);
+					maxRight = Math.max(maxRight, left + settings.dotSize);
 				}
-				rails[ann.side].push({ id: ann.id, top: this.anchorTop(rect, ann, box), height: 0, el, unit: box.unit });
+				rails[ann.side].push({ id: ann.id, top: pageAnchorTop(rect, ann.offsetY, box), height: 0, el, unit: box.unit });
 			} else if (ann.collapsed) {
-				const left = reachableX(box.left + (this.freeXPct(rect, ann, box) / 100) * box.width);
+				const left = freeLeft(ann.freeX, rect, box);
 				el.style.left = `${left}px`;
-				el.style.top = `${box.top + (this.freeYPct(rect, ann, box) / 100) * box.height}px`;
-				maxRight = Math.max(maxRight, left + DOT_SIZE_PX);
+				el.style.top = `${box.top + ((ann.freeY ?? defaultFreeYPct(rect, box)) / 100) * box.height}px`;
+				maxRight = Math.max(maxRight, left + settings.dotSize);
 			} else {
 				maxRight = Math.max(maxRight, this.placeFree(el, rect, ann, box, settings));
 			}
@@ -383,12 +364,16 @@ export class AnnotationLayer {
 			// offsetHeight is the element's UNSCALED layout height (transforms don't
 			// affect it), so it has to be multiplied back up to compare against the
 			// scroll-container coordinates the tops are in.
-			for (const r of group) r.height = r.el.offsetHeight * r.unit;
+			for (const r of group) {
+				// Expanded boxes scale with the PDF; collapsed dots deliberately stay
+				// screen-sized, so their collision footprint must not be scaled again.
+				r.height = r.el.hasClass("margin-notes-pdf-dot") ? r.el.offsetHeight : r.el.offsetHeight * r.unit;
+			}
 			// MIN_GAP is a page-point constant like everything else here — a fixed
 			// px value would look cramped zoomed in and oversized zoomed out. All
 			// notes in one rail share the document's zoom in practice, so the
 			// first entry's is representative.
-			const gapPx = MIN_GAP * (group[0]?.unit ?? 1);
+			const gapPx = railCollisionGapPx(group[0]?.unit ?? 1);
 			for (const r of resolveCollisions(group, gapPx)) r.el.style.top = `${r.top}px`;
 		}
 
@@ -407,46 +392,11 @@ export class AnnotationLayer {
 		// After positioning: leader lines need the notes' final boxes, and the
 		// `always` bands must not be counted in the width above (they sit over the
 		// page, never past it).
-		this.renderModeDecorations(built, settings, scroller);
+		if (renderDecorations) this.renderModeDecorations(built, settings, scroller);
 
 		const right = Math.max(maxRight, this.measuredRight(built, scroller));
 		this.layer!.style.width = right > 0 ? `${right + OUTER_MARGIN_PX}px` : "";
-	}
-
-	/**
-	 * How much blank space the left rail needs beside the pages, in px.
-	 *
-	 * The right rail never needed this: notes past the right page edge simply
-	 * extend the layer's width and the container scrolls to them. The left has no
-	 * such freedom, because scroll offsets cannot go below zero — so `railLeft`
-	 * clamps at 0, and once the page's own left gutter is smaller than the rail
-	 * needs (which is exactly what zooming in does: the page grows until it fills
-	 * the viewport and the gutter reaches zero), EVERY left note clamps to the
-	 * same x and stacks up against the page edge, losing its position entirely.
-	 * That asymmetry is why the left collapsed on zoom while the right was fine.
-	 *
-	 * Clamping was treating the symptom. The fix is to make the space exist:
-	 * padding on the scroll container pushes the pages right, so there is always
-	 * a real gutter to sit in and the clamp never fires. This is deliberately
-	 * derived only from the rail's own settings and the zoom — never from a
-	 * measured page position — because padding changes page positions, and
-	 * feeding those back in would oscillate.
-	 */
-	private leftGutterFor(built: Placed[], settings: PdfAnnotationSettings, scroller: HTMLElement): number {
-		if (!built.some((b) => b.ann.pinned && b.ann.side === "left")) return 0;
-
-		const page = built.find((b) => b.pageView.div.isConnected && b.pageView.pdfPage?.view)?.pageView;
-		if (!page) return 0;
-		const unit = this.pageBox(page, scroller, scroller.getBoundingClientRect()).unit;
-
-		const needed = (this.railWidthPt(settings, "left") + this.railGapPt(settings, "left")) * unit;
-		return Math.max(0, needed + OUTER_MARGIN_PX);
-	}
-
-	/** Idempotent so a re-layout with an unchanged gutter doesn't thrash pdf.js. */
-	private applyLeftGutter(scroller: HTMLElement, px: number): void {
-		const want = px > 0 ? `${Math.ceil(px)}px` : "";
-		if (scroller.style.paddingLeft !== want) scroller.style.paddingLeft = want;
+		if (renderDecorations) this.leftSpace.commit(scroller);
 	}
 
 	/** Rightmost rendered edge of any placed note, in scroll-container px. */
@@ -477,26 +427,6 @@ export class AnnotationLayer {
 	 * The only clamp left is at the content origin: a left rail may not go
 	 * negative, since nothing can scroll left of 0 and it would be unreachable.
 	 */
-	private railLeft(side: MarginSide, box: PageBox, railWidthPx: number, railGapPx: number): number {
-		return side === "right"
-			? box.left + box.width + railGapPx
-			: Math.max(0, box.left - railWidthPx - railGapPx);
-	}
-
-	/**
-	 * Vertical position derived from the anchor (plus any manual nudge).
-	 * `offsetY` is stored in PDF points, like `anchor` itself — converting it to
-	 * px here (× `box.unit`) rather than storing raw px is what keeps a manually
-	 * reordered rail note's position relative to its neighbours stable across
-	 * zoom. It used to be stored as raw px: fine at the zoom it was dragged at,
-	 * but frozen afterwards while every neighbour's own position kept scaling —
-	 * that mismatch is what could reorder or bunch up notes after zooming.
-	 */
-	private anchorTop(rect: PdfRect, ann: PdfAnnotation, box: PageBox): number {
-		const topPt = box.ptY1 - Math.max(rect[1], rect[3]);
-		return box.top + (topPt / box.ptHeight) * box.height + (ann.offsetY ?? 0) * box.unit;
-	}
-
 	/**
 	 * Sizes a note in unscaled point units and hands the zoom to a transform.
 	 * `widthPt`/`heightPt` are the note's natural size; the element is then
@@ -536,17 +466,6 @@ export class AnnotationLayer {
 	 * a drag always wins), it's recomputed fresh from the anchor on every
 	 * render rather than stored, so it can never end up stale either.
 	 */
-	private freeXPct(rect: PdfRect, ann: PdfAnnotation, box: PageBox): number {
-		if (ann.freeX !== undefined) return ann.freeX;
-		const right = Math.max(rect[0], rect[2]);
-		return ((right - box.ptX0) / box.ptWidth) * 100 + 3;
-	}
-
-	/** Free-placement Y, defaulting to the anchor's own height on the page. */
-	private freeYPct(rect: PdfRect, ann: PdfAnnotation, box: PageBox): number {
-		return ann.freeY ?? ((box.ptY1 - Math.max(rect[1], rect[3])) / box.ptHeight) * 100;
-	}
-
 	/** Returns the note's right edge in scroll-container px, for the layer width. */
 	private placeFree(
 		el: HTMLElement,
@@ -555,9 +474,9 @@ export class AnnotationLayer {
 		box: PageBox,
 		settings: PdfAnnotationSettings
 	): number {
-		const left = reachableX(box.left + (this.freeXPct(rect, ann, box) / 100) * box.width);
+		const left = freeLeft(ann.freeX, rect, box);
 		el.style.left = `${left}px`;
-		el.style.top = `${box.top + (this.freeYPct(rect, ann, box) / 100) * box.height}px`;
+		el.style.top = `${box.top + ((ann.freeY ?? defaultFreeYPct(rect, box)) / 100) * box.height}px`;
 		// freeW/freeH are page-percentages; convert to the note's own unscaled
 		// units by dividing out the zoom the transform is about to re-apply.
 		const widthPx = ((ann.freeW ?? DEFAULT_FREE_WIDTH_PCT) / 100) * box.width;
@@ -566,19 +485,34 @@ export class AnnotationLayer {
 		return left + widthPx;
 	}
 
-	private createDot(layer: HTMLElement, pdfPath: string, ann: PdfAnnotation): HTMLElement {
+	private createDot(layer: HTMLElement, pdfPath: string, ann: PdfAnnotation, pageView: PDFPageView): HTMLElement {
 		const dot = layer.createDiv("margin-notes-pdf-dot");
 		dot.dataset.annotationId = ann.id;
 		dot.dataset.mode = ann.pinned ? "rail" : "free";
-		if (ann.color) dot.style.setProperty("--margin-notes-pdf-note-color", ann.color);
-		if (ann.text) dot.setAttribute("aria-label", ann.text.slice(0, 80));
+		dot.dataset.side = ann.side;
+		dot.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
+		dot.style.setProperty("--margin-notes-pdf-dot-size", `${this.getSettings().dotSize}px`);
+		dot.setAttribute("aria-label", "批注点：点击展开，长按后拖动");
 
-		dot.addEventListener("mousedown", (e) => e.stopPropagation());
+		let suppressClickUntil = 0;
 		dot.addEventListener("click", (e) => {
 			e.stopPropagation();
+			if (Date.now() < suppressClickUntil) {
+				e.preventDefault();
+				return;
+			}
 			this.mutate(pdfPath, ann, (a) => (a.collapsed = false));
 		});
-		dot.addEventListener("contextmenu", (e) => this.showMenu(e, pdfPath, ann));
+		dot.addEventListener("contextmenu", (e) => {
+			if (dot.hasClass("is-dragging")) {
+				e.preventDefault();
+				return;
+			}
+			this.showMenu(e, pdfPath, ann);
+		});
+		this.gestures.attachDotLongPress(dot, pdfPath, ann, pageView, () => {
+			suppressClickUntil = Date.now() + 500;
+		});
 		return dot;
 	}
 
@@ -648,7 +582,7 @@ export class AnnotationLayer {
 			sourcePath: pdfPath,
 			initialText: ann.text,
 			onCommit: (text) => this.mutate(pdfPath, ann, (a) => (a.text = text)),
-			// No icon row: the note carries ONE control (see attachDrag), which is
+			// No icon row: the note carries ONE grip, installed by the gesture controller, which is
 			// both the drag handle and the menu trigger. A row of icons needs a
 			// solid backplate to stay legible over text, and that plate covered the
 			// first line — the thing the note is mostly made of. Everything the
@@ -661,7 +595,7 @@ export class AnnotationLayer {
 		handle.el.dataset.side = ann.side;
 		handle.el.dataset.style = ann.style ?? "boxed";
 		const color = this.colorOf(ann);
-		if (ann.color) handle.el.style.setProperty("--margin-notes-pdf-note-color", ann.color);
+		handle.el.style.setProperty("--margin-notes-pdf-note-color", color);
 		handle.el.style.setProperty("--margin-notes-pdf-note-color-deep", darken(color));
 		handle.el.querySelector<HTMLElement>(".margin-notes-pdf-swatch")?.style.setProperty("color", color);
 
@@ -677,8 +611,7 @@ export class AnnotationLayer {
 			handle.el.removeClass("is-linked");
 			this.endHoverHighlight();
 		});
-		this.attachDrag(handle, pdfPath, ann, pageView);
-		this.attachResize(handle, pdfPath, ann, pageView);
+		this.gestures.attachBox(handle, pdfPath, ann, pageView, (at) => this.openMenu(pdfPath, ann, at));
 		return handle;
 	}
 
@@ -690,9 +623,12 @@ export class AnnotationLayer {
 	private pickColor(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		openSwatchPicker({
 			at,
-			colors: this.getSettings().palette,
-			current: ann.color,
-			onPick: (color) => this.mutate(pdfPath, ann, (a) => (a.color = color)),
+			swatches: this.getSettings().palette,
+			currentKey: ann.colorKey,
+			onPick: (colorKey) =>
+				this.mutate(pdfPath, ann, (a) => {
+					a.colorKey = colorKey;
+				}),
 		});
 	}
 
@@ -734,11 +670,28 @@ export class AnnotationLayer {
 				return;
 			}
 		}
+
+		// A free note's `side` used to be an invisible creation default (`right`),
+		// not a statement of intent. Reusing it when pinning made a note visibly on
+		// the left jump across the whole page. Choose the rail nearest the note's
+		// current centre instead; the menu still allows an explicit move afterwards.
+		let nearestSide = ann.side;
+		if (!ann.pinned) {
+			const el = this.layer?.querySelector<HTMLElement>(`[data-annotation-id="${ann.id}"]`);
+			const pageView = this.last?.pages.get(ann.page);
+			const box = pageView ? this.currentPageBox(pageView) : null;
+			if (el && box) {
+				const noteLeft = parseFloat(el.style.left || "0");
+				const noteCentre = noteLeft + el.getBoundingClientRect().width / 2;
+				nearestSide = noteCentre < box.left + box.width / 2 ? "left" : "right";
+			}
+		}
 		this.mutate(pdfPath, ann, (a) => {
 			if (a.pinned) {
 				a.pinned = false;
 			} else {
 				a.pinned = true;
+				a.side = nearestSide;
 				a.offsetY = 0;
 			}
 		});
@@ -763,6 +716,13 @@ export class AnnotationLayer {
 				.setTitle(ann.collapsed ? "展开" : "收起成点")
 				.setIcon(ann.collapsed ? "maximize-2" : "minus")
 				.onClick(() => this.mutate(pdfPath, ann, (a) => (a.collapsed = !a.collapsed)))
+			);
+		const leaderShown = ann.showLeader ?? (this.getSettings().highlightMode === "line");
+		menu.addItem((i) =>
+			i
+				.setTitle(leaderShown ? "取消箭头（覆盖默认设置）" : "添加箭头（覆盖默认设置）")
+				.setIcon(leaderShown ? "minus" : "arrow-up-right")
+				.onClick(() => this.mutate(pdfPath, ann, (a) => (a.showLeader = !leaderShown)))
 		);
 		if (ann.pinned) {
 			menu.addItem((i) =>
@@ -811,14 +771,22 @@ export class AnnotationLayer {
 				.setIcon("palette")
 				.onClick(() => this.pickColor(pdfPath, ann, at))
 		);
-		if (ann.color) {
+		if (ann.colorKey) {
 			menu.addItem((i) =>
 				i
 					.setTitle("恢复默认颜色")
 					.setIcon("rotate-ccw")
-					.onClick(() => this.mutate(pdfPath, ann, (a) => (a.color = undefined)))
+					.onClick(() =>
+						this.mutate(pdfPath, ann, (a) => {
+							a.colorKey = undefined;
+						})
+					)
 			);
 		}
+		menu.addSeparator();
+		appendAnnotationLayerMenuItems(menu, this.getSettings().layers, ann, (next) =>
+			this.mutate(pdfPath, ann, (a) => (a.layerIds = next))
+		);
 		if (!ann.pinned) {
 			menu.addItem((i) =>
 				i
@@ -840,250 +808,10 @@ export class AnnotationLayer {
 		menu.showAtPosition(at);
 	}
 
-	/**
-	 * Drag from the grip. A pinned note only moves vertically (it lives in a
-	 * rail) and stores the delta as `offsetY`; a free note moves in both axes and
-	 * stores page-relative percentages, so it keeps its spot across zoom.
-	 */
-	private attachDrag(handle: AnnotationBoxHandle, pdfPath: string, ann: PdfAnnotation, pageView: PDFPageView): void {
-		const grip = handle.toolbarEl.createDiv({ cls: "margin-notes-pdf-grip" });
-		grip.setAttribute("aria-label", ann.pinned ? "拖动上下移动,点击打开菜单" : "拖动摆放,点击打开菜单");
-
-		grip.addEventListener("pointerdown", (ev) =>
-			this.beginNoteDrag(ev, handle.el, pdfPath, ann, pageView, (at) => this.openMenu(pdfPath, ann, at))
-		);
-	}
-
-	/**
-	 * Moves a note. Shared by the toolbar grip and — since it visibly ties the
-	 * note to its text — the leader line, which can be grabbed anywhere along its
-	 * length to drag the note it belongs to.
-	 */
-	private beginNoteDrag(
-		ev: PointerEvent,
-		el: HTMLElement,
-		pdfPath: string,
-		ann: PdfAnnotation,
-		pageView: PDFPageView,
-		/** Called instead of committing a move when the gesture never became a
-		 * drag — which is what lets one control be both handle and button: press
-		 * and move to reposition, press and release to open the menu. */
-		onTap?: (at: { x: number; y: number }) => void
-	): void {
-		ev.preventDefault();
-		ev.stopPropagation();
-		const handle = { el };
-		let moved = false;
-		const startX = ev.clientX;
-		const startY = ev.clientY;
-		const startLeft = parseFloat(handle.el.style.left || "0");
-		const startTop = parseFloat(handle.el.style.top || "0");
-
-		const onMove = (m: PointerEvent) => {
-			if (!moved && Math.hypot(m.clientX - startX, m.clientY - startY) < TAP_SLOP_PX) return;
-			// Only past the slop does this count as a drag. Below it, the press is a
-			// click with an unsteady hand — treating that as a 1px move would both
-			// swallow the menu and write a pointless undo entry.
-			moved = true;
-			handle.el.addClass("is-dragging");
-			handle.el.style.top = `${startTop + (m.clientY - startY)}px`;
-			if (!ann.pinned) handle.el.style.left = `${startLeft + (m.clientX - startX)}px`;
-			this.refreshLeader(ann.id);
-		};
-		const onUp = (u: PointerEvent) => {
-			window.removeEventListener("pointermove", onMove);
-			handle.el.removeClass("is-dragging");
-			if (!moved) {
-				onTap?.({ x: u.clientX, y: u.clientY });
-				return;
-			}
-			const dx = u.clientX - startX;
-			const dy = u.clientY - startY;
-			// Measured now, not at build time: a zoom may have happened since.
-			const box = this.currentPageBox(pageView);
-			this.mutate(pdfPath, ann, (a) => {
-				if (a.pinned) {
-					// Stored in PDF points, like everything else here — a raw-px
-					// offset would stay fixed size on screen while the note's own
-					// anchor position (and its neighbours') keeps scaling with
-					// zoom, which is what could reorder/bunch up a rail after
-					// zooming. See anchorTop(). Falls back to raw px only in the
-					// edge case where the page isn't measurable right now.
-					a.offsetY = (a.offsetY ?? 0) + (box ? dy / box.unit : dy);
-				} else if (box) {
-					a.freeX = ((startLeft + dx - box.left) / box.width) * 100;
-					a.freeY = ((startTop + dy - box.top) / box.height) * 100;
-				}
-			});
-		};
-		window.addEventListener("pointermove", onMove);
-		window.addEventListener("pointerup", onUp, { once: true });
-	}
-
 	private currentPageBox(pageView: PDFPageView): PageBox | null {
 		const scroller = this.scroller;
 		if (!scroller || !pageView.div.isConnected || !pageView.pdfPage?.view) return null;
-		return this.pageBox(pageView, scroller, scroller.getBoundingClientRect());
-	}
-
-	/**
-	 * Resize handles on BOTH vertical edges (plus a bottom-right corner for free
-	 * notes) — a normal resizable box, rather than the single page-facing edge
-	 * this used to have. Whichever edge is grabbed follows the cursor; for the
-	 * left edge that means moving `left` as the width changes, or the box
-	 * appears to resize from its opposite side.
-	 *
-	 * A free note stores its own width/height as page-percent; a pinned note
-	 * writes the shared RAIL width instead, since every note in a rail has to
-	 * agree on one. The dragged px width is converted back to page points
-	 * (÷ current zoom) before saving, so the rail keeps the size the user chose
-	 * as the PDF is zoomed afterwards.
-	 */
-	private attachResize(handle: AnnotationBoxHandle, pdfPath: string, ann: PdfAnnotation, pageView: PDFPageView): void {
-		if (ann.pinned) this.attachRailResize(handle, ann, pageView);
-		else this.attachFreeResize(handle, pdfPath, ann, pageView);
-	}
-
-	/**
-	 * A rail note's position is DERIVED (`railLeft()` = page edge + gap), not
-	 * stored — so its page-facing edge is pinned by the layout and simply
-	 * cannot be moved by changing the width. Dragging it used to look broken
-	 * for exactly that reason: the edge snapped back on release and the
-	 * opposite side grew instead.
-	 *
-	 * What makes both edges behave like a normal box is recognising that a rail
-	 * has TWO degrees of freedom, and each edge owns one:
-	 *   - outer edge (away from the page) → the rail's WIDTH
-	 *   - inner edge (facing the page)    → the rail's GAP from the page,
-	 *     with width compensating so the outer edge stays put
-	 * Both are shared settings, so dragging either on any one note re-flows
-	 * every note in that rail — which is the point of a rail.
-	 */
-	private attachRailResize(handle: AnnotationBoxHandle, ann: PdfAnnotation, pageView: PDFPageView): void {
-		// Which DOM edge faces the page depends on the side the rail is on.
-		const innerEdge = ann.side === "right" ? "left" : "right";
-		const widthKey = ann.side === "right" ? "railWidthRight" : "railWidthLeft";
-		const gapKey = ann.side === "right" ? "railGapRight" : "railGapLeft";
-
-		const begin = (edge: "left" | "right") => (ev: PointerEvent) => {
-			ev.preventDefault();
-			ev.stopPropagation();
-			const box = this.currentPageBox(pageView);
-			if (!box) return;
-
-			const startX = ev.clientX;
-			// The element is laid out unscaled and scaled by transform, so
-			// offsetWidth is already in points — and every quantity below stays in
-			// points, cursor deltas included (÷ zoom), so nothing needs converting
-			// back on save.
-			const startW = handle.el.offsetWidth;
-			const startGap = this.railGapPt(this.getSettings(), ann.side);
-			const isInner = edge === innerEdge;
-			// dx is measured rightwards; a left-hand rail mirrors every effect.
-			const sign = ann.side === "right" ? 1 : -1;
-			handle.el.addClass("is-dragging");
-
-			const solve = (x: number) => {
-				const dx = ((x - startX) * sign) / box.unit;
-				// Inner edge: width grows as the edge moves toward the page, and the
-				// gap shrinks by the same amount so the outer edge stays put.
-				// Outer edge: width alone, gap untouched.
-				const width = Math.max(MIN_RAIL_WIDTH_PT, isInner ? startW - dx : startW + dx);
-				const gap = isInner ? startGap + (startW - width) : startGap;
-				return { width, gap };
-			};
-
-			const onMove = (m: PointerEvent) => {
-				const { width, gap } = solve(m.clientX);
-				handle.el.style.width = `${width}px`;
-				handle.el.style.left = `${this.railLeft(ann.side, box, width * box.unit, gap * box.unit)}px`;
-			};
-			const onUp = (u: PointerEvent) => {
-				window.removeEventListener("pointermove", onMove);
-				handle.el.removeClass("is-dragging");
-				const { width, gap } = solve(u.clientX);
-				const widthPt = Math.round(width);
-				const gapPt = Math.round(gap);
-				const settings = this.getSettings();
-				if (widthPt !== Math.round(settings[widthKey]) || gapPt !== Math.round(settings[gapKey])) {
-					this.saveSettings({ [widthKey]: widthPt, [gapKey]: gapPt });
-				} else {
-					this.refresh();
-				}
-			};
-			window.addEventListener("pointermove", onMove);
-			window.addEventListener("pointerup", onUp, { once: true });
-		};
-
-		for (const edge of ["left", "right"] as const) {
-			const grip = handle.el.createDiv(`margin-notes-pdf-resize is-edge is-${edge}`);
-			grip.setAttribute(
-				"aria-label",
-				edge === innerEdge ? "拖动调整轨道离页面的距离" : "拖动调整轨道宽度"
-			);
-			grip.addEventListener("pointerdown", begin(edge));
-		}
-	}
-
-	/** A free note stores its own box, so both edges and the corner move it directly. */
-	private attachFreeResize(
-		handle: AnnotationBoxHandle,
-		pdfPath: string,
-		ann: PdfAnnotation,
-		pageView: PDFPageView
-	): void {
-		const begin = (edge: "left" | "right" | "corner") => (ev: PointerEvent) => {
-			ev.preventDefault();
-			ev.stopPropagation();
-			const startX = ev.clientX;
-			const startY = ev.clientY;
-			// Unscaled (point) dimensions — the transform supplies the zoom, so
-			// cursor deltas are divided by it to stay in the same units.
-			const startW = handle.el.offsetWidth;
-			const startH = handle.el.offsetHeight;
-			const startLeft = parseFloat(handle.el.style.left || "0");
-			const zoom = this.currentPageBox(pageView)?.unit ?? 1;
-			const grabsLeft = edge === "left";
-			handle.el.addClass("is-dragging");
-
-			const widthAt = (x: number) =>
-				Math.max(MIN_FREE_WIDTH_PT, startW + (grabsLeft ? startX - x : x - startX) / zoom);
-			const heightAt = (y: number) => Math.max(MIN_HEIGHT_PX, startH + (y - startY) / zoom);
-
-			const onMove = (m: PointerEvent) => {
-				const w = widthAt(m.clientX);
-				handle.el.style.width = `${w}px`;
-				// `left` is a scroll-container coordinate, so the width delta has to
-				// be scaled back up before it can move the box's on-screen position.
-				if (grabsLeft) handle.el.style.left = `${startLeft + (startW - w) * zoom}px`;
-				if (edge === "corner") handle.el.style.height = `${heightAt(m.clientY)}px`;
-			};
-			const onUp = (u: PointerEvent) => {
-				window.removeEventListener("pointermove", onMove);
-				handle.el.removeClass("is-dragging");
-				const box = this.currentPageBox(pageView);
-				if (!box) return;
-				const w = widthAt(u.clientX);
-				const newLeft = grabsLeft ? startLeft + (startW - w) * zoom : startLeft;
-				this.mutate(pdfPath, ann, (a) => {
-					a.freeW = ((w * zoom) / box.width) * 100;
-					// Growing leftwards moves the note too — keep its right edge put.
-					if (grabsLeft) a.freeX = ((newLeft - box.left) / box.width) * 100;
-					if (edge === "corner") a.freeH = ((heightAt(u.clientY) * zoom) / box.height) * 100;
-				});
-			};
-			window.addEventListener("pointermove", onMove);
-			window.addEventListener("pointerup", onUp, { once: true });
-		};
-
-		for (const edge of ["left", "right"] as const) {
-			const grip = handle.el.createDiv(`margin-notes-pdf-resize is-edge is-${edge}`);
-			grip.setAttribute("aria-label", "拖动调整宽度");
-			grip.addEventListener("pointerdown", begin(edge));
-		}
-		const corner = handle.el.createDiv("margin-notes-pdf-resize is-corner");
-		corner.setAttribute("aria-label", "拖动调整大小");
-		corner.addEventListener("pointerdown", begin("corner"));
+		return measurePageBox(pageView, scroller, scroller.getBoundingClientRect());
 	}
 
 	/**
@@ -1120,6 +848,8 @@ export class AnnotationLayer {
 	 */
 	private hoverMark: HTMLElement | null = null;
 	private activeBand: HTMLElement | null = null;
+	private hoverPreview: HTMLElement | null = null;
+	private hoverPreviewId: string | null = null;
 
 	beginHoverHighlight(pageView: PDFPageView, ann: PdfAnnotation): void {
 		this.endHoverHighlight();
@@ -1140,6 +870,50 @@ export class AnnotationLayer {
 		this.activeBand = null;
 		this.hoverMark?.remove();
 		this.hoverMark = null;
+	}
+
+	private clearHoverPreview(): void {
+		this.hoverPreview?.remove();
+		this.hoverPreview = null;
+		this.hoverPreviewId = null;
+	}
+
+	/** Shows collapsed-note content from the much larger source highlight hit area. */
+	private showCollapsedPreview(hit: {
+		ann: PdfAnnotation;
+		x0: number;
+		x1: number;
+		y0: number;
+		y1: number;
+	}): void {
+		this.clearHoverPreview();
+		const layer = this.layer;
+		const scroller = this.scroller;
+		if (!layer || !scroller || !hit.ann.text) return;
+
+		const preview = layer.createDiv("margin-notes-pdf-collapsed-preview");
+		preview.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(hit.ann));
+		const spaceBelow = scroller.scrollTop + scroller.clientHeight - hit.y1;
+		const spaceAbove = hit.y0 - scroller.scrollTop;
+		const above = spaceBelow < 150 && spaceAbove > spaceBelow;
+		preview.toggleClass("is-above", above);
+		const previewLeft = Math.max(
+			scroller.scrollLeft + 4,
+			Math.min(hit.x0, scroller.scrollLeft + scroller.clientWidth - 284)
+		);
+		preview.setCssStyles({
+			left: `${previewLeft}px`,
+			top: `${above ? hit.y0 - 7 : hit.y1 + 7}px`,
+		});
+		this.hoverPreview = preview;
+		this.hoverPreviewId = hit.ann.id;
+
+		const render = async () => {
+			if (hit.ann.text.includes("$")) await loadMathJax();
+			if (!preview.isConnected || this.hoverPreviewId !== hit.ann.id) return;
+			await MarkdownRenderer.render(this.app, hit.ann.text, preview, this.last?.pdfPath ?? "", this.component);
+		};
+		void render();
 	}
 
 	/**
@@ -1172,8 +946,7 @@ export class AnnotationLayer {
 	 * highlights on one page readable at a glance.
 	 */
 	private colorOf(ann: PdfAnnotation): string {
-		const s = this.getSettings();
-		return ann.color ?? (ann.pinned ? s.railColor : s.freeColor);
+		return resolveAnnotationColor(ann, this.getSettings());
 	}
 
 	private drawAnchorMark(pageView: PDFPageView, ann: PdfAnnotation, cls: string): HTMLElement | null {
@@ -1193,7 +966,7 @@ export class AnnotationLayer {
 			: ann.anchor;
 		if (!rect) return null;
 
-		const box = this.pageBox(pageView, scroller, scroller.getBoundingClientRect());
+		const box = measurePageBox(pageView, scroller, scroller.getBoundingClientRect());
 		const left = Math.min(rect[0], rect[2]);
 		const right = Math.max(rect[0], rect[2]);
 		const topPt = box.ptY1 - Math.max(rect[1], rect[3]);
@@ -1218,6 +991,13 @@ export class AnnotationLayer {
 	 * what `hitAreas` is for.
 	 */
 	private renderModeDecorations(built: Placed[], settings: PdfAnnotationSettings, scroller: HTMLElement): void {
+		// Clearing a Map does not remove its DOM. Keep this defensive cleanup even
+		// though normal rebuilds now draw decorations only in the final pass.
+		for (const parts of this.leaders.values()) {
+			parts.line.remove();
+			parts.knob.remove();
+		}
+		for (const band of this.bands.values()) band.remove();
 		this.hitAreas = [];
 		this.bands.clear();
 		this.leaders.clear();
@@ -1231,7 +1011,7 @@ export class AnnotationLayer {
 			if (!pageView.div.isConnected || !pageView.pdfPage?.view) continue;
 			if (isUnresolvedAnchor(rect)) continue;
 
-			const box = this.pageBox(pageView, scroller, scrollerRect);
+			const box = measurePageBox(pageView, scroller, scrollerRect);
 			const x0 = box.left + ((Math.min(rect[0], rect[2]) - box.ptX0) / box.ptWidth) * box.width;
 			const x1 = box.left + ((Math.max(rect[0], rect[2]) - box.ptX0) / box.ptWidth) * box.width;
 			const y0 = box.top + ((box.ptY1 - Math.max(rect[1], rect[3])) / box.ptHeight) * box.height;
@@ -1246,14 +1026,19 @@ export class AnnotationLayer {
 				band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
 				band.setCssStyles({ left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
 				this.bands.set(ann.id, band);
-			} else if (mode === "line") {
+			}
+			// A collapsed note should render as exactly one point. Keeping the
+			// leader's draggable endpoint created a second, unexplained dot.
+			if (leaderVisible(ann.collapsed, ann.showLeader, mode === "line")) {
 				this.drawLeader(layer, ann, el, { x0, x1, y0, y1 }, pageView);
 			}
 		}
 	}
 
 	/**
-	 * A thin leader from the note's page-facing edge to the middle of its text.
+	 * A thin leader from the note edge nearest its text to the nearest point on
+	 * that text. All four note edges participate, so a note above or below its
+	 * source gets a vertical leader instead of a forced diagonal from one side.
 	 * Drawn as one rotated 1px div rather than an SVG overlay — it needs no
 	 * separate coordinate system, and there is exactly one primitive to keep in
 	 * sync with the layer's scroll coordinates.
@@ -1277,8 +1062,8 @@ export class AnnotationLayer {
 	}
 
 	/**
-	 * Places (or replaces) a leader from the note's page-facing edge to the near
-	 * edge of its text, with the knob on the text end. Split out from drawLeader
+	 * Places (or replaces) a leader between the nearest of all four note edges
+	 * and its text, with the knob on the text end. Split out from drawLeader
 	 * so a drag can call it on every pointermove — the line used to be redrawn
 	 * only by the debounced rebuild, which is why it visibly lagged behind a note
 	 * being dragged.
@@ -1289,15 +1074,13 @@ export class AnnotationLayer {
 		const noteLeft = parseFloat(noteEl.style.left || "0");
 		const noteTop = parseFloat(noteEl.style.top || "0");
 
-		const noteCentre = noteLeft + noteRect.width / 2;
-		const textCentre = (a.x0 + a.x1) / 2;
-		const facingRight = noteCentre > textCentre;
-		const sx = facingRight ? noteLeft : noteLeft + noteRect.width;
-		const sy = noteTop + noteRect.height / 2;
-		// Default attachment: the middle of the region's edge nearest the note.
-		const f = p.ann.leaderAt ?? { x: facingRight ? 1 : 0, y: 0.5 };
-		const tx = a.x0 + f.x * (a.x1 - a.x0);
-		const ty = a.y0 + f.y * (a.y1 - a.y0);
+		const { start, end } = adaptiveLeaderEndpoints(
+			{ left: noteLeft, top: noteTop, right: noteLeft + noteRect.width, bottom: noteTop + noteRect.height },
+			{ left: a.x0, top: a.y0, right: a.x1, bottom: a.y1 },
+			p.ann.leaderAt
+		);
+		const { x: sx, y: sy } = start;
+		const { x: tx, y: ty } = end;
 
 		const dx = tx - sx;
 		const dy = ty - sy;
@@ -1396,20 +1179,24 @@ export class AnnotationLayer {
 
 		for (const h of this.hitAreas) h.el.removeClass("is-linked");
 		this.endHoverHighlight();
+		this.clearHoverPreview();
 		if (!hit) return;
 
 		hit.el.addClass("is-linked");
+		if (hit.ann.collapsed) this.showCollapsedPreview(hit);
 		const pageView = this.last?.pages.get(hit.ann.page);
 		if (pageView) this.beginHoverHighlight(pageView, hit.ann);
 	};
 
 	destroy(): void {
 		window.clearTimeout(this.rebuildTimer);
+		this.zoom.destroy();
 		this.hoverMark = null;
+		this.clearHoverPreview();
 		// The gutter lives on pdf.js's own element, not ours — it has to be undone
 		// explicitly, unlike the layer, which disappears with its own node.
 		if (this.scroller) {
-			this.applyLeftGutter(this.scroller, 0);
+			this.leftSpace.clear(this.scroller);
 			this.scroller.removeEventListener("mousemove", this.onScrollerMove);
 			this.scroller.removeEventListener("contextmenu", this.onScrollerContextMenu);
 		}

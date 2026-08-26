@@ -2,6 +2,18 @@ export interface FootnoteRef {
 	id: string;
 	/** Position of the `[^id]` marker in the document. */
 	pos: number;
+	/** Position immediately after the marker. */
+	to: number;
+}
+
+export interface TextRange {
+	from: number;
+	to: number;
+}
+
+/** A folded marker is absent from CM6's visible ranges and must not create a side note. */
+export function footnoteRefIsVisible(ref: FootnoteRef, ranges: readonly TextRange[]): boolean {
+	return ranges.some((range) => ref.pos >= range.from && ref.to <= range.to);
 }
 
 export interface FootnoteDef {
@@ -74,7 +86,7 @@ export function scanFootnotes(text: string): { refs: FootnoteRef[]; defs: Footno
 		const afterIdx = m.index + m[0].length;
 		const isDefMarker = text[afterIdx] === ":" && isLineStart(text, m.index);
 		if (isDefMarker) continue;
-		refs.push({ id: m[1], pos: m.index });
+		refs.push({ id: m[1], pos: m.index, to: afterIdx });
 	}
 
 	return { refs, defs };

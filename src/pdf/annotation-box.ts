@@ -41,8 +41,10 @@ export interface AnnotationBoxHandle {
  *
  * Display state renders the annotation's Markdown through Obsidian's own
  * pipeline (LaTeX/MathJax, wikilinks, bold, …), exactly like the footnote
- * sidenote in src/margin-view-plugin.ts. Clicking the body swaps it for the
- * plain source in a contentEditable; blur/Enter commits, Escape reverts.
+ * sidenote in src/margin-view-plugin.ts. Clicking the body swaps it for a real
+ * multiline textarea: Enter inserts a line, blur or Mod+Enter commits, Escape
+ * reverts. A textarea is deliberate — contentEditable rewrites line breaks as
+ * browser-dependent div/br DOM and was eating Markdown newlines on round-trip.
  * Clicking a link inside the rendered output follows the link instead of
  * entering edit mode.
  */
@@ -70,6 +72,7 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 	const bodyEl = el.createDiv("margin-notes-pdf-body");
 	bodyEl.dataset.placeholder = opts.placeholder ?? "写点什么…";
 	bodyEl.spellcheck = false;
+	let editorEl: HTMLTextAreaElement | null = null;
 
 	const render = async (): Promise<void> => {
 		bodyEl.empty();
@@ -91,26 +94,42 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 	};
 
 	const enterEdit = (): void => {
+		if (editorEl) return;
 		el.addClass(EDITING_CLASS);
 		bodyEl.empty();
-		bodyEl.contentEditable = "true";
-		bodyEl.setText(el.dataset.source ?? "");
-		bodyEl.focus();
-		const sel = window.getSelection();
-		if (sel) {
-			sel.selectAllChildren(bodyEl);
-			sel.collapseToEnd();
-		}
+		const editor = bodyEl.createEl("textarea", { cls: "margin-notes-pdf-editor" });
+		editorEl = editor;
+		editor.value = el.dataset.source ?? "";
+		editor.spellcheck = false;
+		const resize = () => {
+			editor.style.height = "0px";
+			editor.style.height = `${Math.max(48, editor.scrollHeight)}px`;
+		};
+		editor.addEventListener("input", resize);
+		editor.addEventListener("blur", () => finishEdit(true));
+		editor.addEventListener("keydown", (event) => {
+			event.stopPropagation();
+			if (event.key === "Escape") {
+				event.preventDefault();
+				finishEdit(false);
+			} else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+				event.preventDefault();
+				finishEdit(true);
+			}
+		});
+		resize();
+		editor.focus();
+		editor.setSelectionRange(editor.value.length, editor.value.length);
 	};
 
-	const commit = (): void => {
-		// contentEditable innerText: \n for line breaks, NBSP for some spaces — the
-		// NBSP must be an explicit \u00a0 escape, never a literal character (see
-		// HANDOFF.md "已经踩过的坑": a literal one silently fails to round-trip).
-		const newText = bodyEl.innerText.replace(/\u00a0/g, " ").replace(/\n+$/, "").trimEnd();
-		bodyEl.contentEditable = "false";
+	const finishEdit = (save: boolean): void => {
+		const editor = editorEl;
+		if (!editor) return;
+		const previous = el.dataset.source ?? "";
+		const newText = save ? editor.value.replace(/\r\n/g, "\n") : previous;
+		editorEl = null;
 		el.removeClass(EDITING_CLASS);
-		const changed = newText !== el.dataset.source;
+		const changed = save && newText !== previous;
 		el.dataset.source = newText;
 		void render();
 		if (changed) opts.onCommit(newText);
@@ -122,20 +141,6 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 		// A click on rendered link text means "follow it", not "start editing".
 		if ((e.target as HTMLElement).closest("a")) return;
 		enterEdit();
-	});
-	bodyEl.addEventListener("blur", () => {
-		if (el.hasClass(EDITING_CLASS)) commit();
-	});
-	bodyEl.addEventListener("keydown", (e) => {
-		if (!el.hasClass(EDITING_CLASS)) return;
-		if (e.key === "Enter" && !e.shiftKey) {
-			e.preventDefault();
-			bodyEl.blur(); // triggers commit()
-		} else if (e.key === "Escape") {
-			e.preventDefault();
-			bodyEl.setText(el.dataset.source ?? "");
-			bodyEl.blur(); // text now equals source → commit() sees no change
-		}
 	});
 
 	return { el, bodyEl, toolbarEl: toolbar, enterEdit, render };

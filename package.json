@@ -1,11 +1,12 @@
 {
 	"name": "margin-notes-hz",
-	"version": "0.1.0",
+	"version": "0.45.1",
 	"description": "Footnote definitions rendered as an editable right-margin sidenote in Obsidian",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "node tests/run-pairing-tests.mjs"
 	},
 	"license": "MIT",
 	"devDependencies": {

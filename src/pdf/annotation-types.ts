@@ -1,4 +1,5 @@
 import type { PdfRect } from "./pdf-layer";
+import { normalizeAnnotationLayerIds } from "./annotation-layers";
 
 export type MarginSide = "left" | "right";
 
@@ -66,13 +67,18 @@ export interface PdfAnnotation {
 	 * of the anchor box (0–1 on each axis). Draggable, but only ever WITHIN the
 	 * region — the arrow says "this note is about this text", so its end has to
 	 * stay on that text; letting it wander would make it point at something the
-	 * note is not attached to. Unset = the middle of the edge facing the note.
+	 * note is not attached to. Unset = the nearest point on any of the anchor's
+	 * four edges; the note end independently chooses its nearest edge.
 	 */
 	leaderAt?: { x: number; y: number };
+	/** Per-note arrow override; unset follows the global highlight mode. */
+	showLeader?: boolean;
 	/** Per-note font multiplier over the global size. */
 	fontScale?: number;
-	/** Per-note colour override; unset = follow the pinned/free default. */
-	color?: string;
+	/** Stable named palette slot; changing that slot updates every assigned note. */
+	colorKey?: string;
+	/** Stable memberships. One annotation may appear in any number of named layers. */
+	layerIds?: string[];
 	/** "plain" drops the border/background — just coloured text. Default "boxed". */
 	style?: "boxed" | "plain";
 
@@ -85,6 +91,8 @@ export interface PdfAnnotation {
 /** Legacy v0.2–0.3 shape, before pinned/collapsed replaced `kind`. */
 interface LegacyAnnotation extends Partial<PdfAnnotation> {
 	kind?: "floating" | "margin";
+	/** Pre-v0.32 literal colour. Read only so it can be migrated to `colorKey`. */
+	color?: string;
 }
 
 /**
@@ -94,7 +102,7 @@ interface LegacyAnnotation extends Partial<PdfAnnotation> {
  */
 export function normalizeAnnotation(raw: LegacyAnnotation): PdfAnnotation {
 	const legacyFloating = raw.kind === "floating";
-	return {
+	const normalized: PdfAnnotation = {
 		id: raw.id ?? makeAnnotationId(),
 		page: raw.page ?? 1,
 		anchor: raw.anchor ?? [0, 0, 0, 0],
@@ -107,14 +115,21 @@ export function normalizeAnnotation(raw: LegacyAnnotation): PdfAnnotation {
 		freeH: raw.freeH,
 		offsetY: raw.offsetY,
 		fontScale: raw.fontScale,
-		color: raw.color,
+		colorKey: raw.colorKey,
+		layerIds: normalizeAnnotationLayerIds(raw.layerIds),
 		quote: raw.quote,
 		leaderAt: raw.leaderAt,
+		showLeader: raw.showLeader,
 		style: raw.style,
 		text: raw.text ?? "",
 		createdAt: raw.createdAt ?? Date.now(),
 		updatedAt: raw.updatedAt ?? Date.now(),
 	};
+	// Keep the legacy value only until PdfAnnotationStore.migrateColorKeys has
+	// assigned a named slot. It is deliberately absent from PdfAnnotation so no
+	// current code can start writing the old representation again.
+	if (raw.color) (normalized as PdfAnnotation & { color?: string }).color = raw.color;
+	return normalized;
 }
 
 export function makeAnnotationId(): string {

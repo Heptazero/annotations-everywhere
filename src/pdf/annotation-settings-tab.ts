@@ -1,13 +1,15 @@
-import { App, PluginSettingTab, Setting, type Plugin } from "obsidian";
+import { App, PluginSettingTab, Setting, setIcon, type Plugin } from "obsidian";
 import {
 	DEFAULT_PDF_ANNOTATION_SETTINGS,
 	HIGHLIGHT_MODE_LABELS,
-	parsePalette,
+	makeColorSlotId,
 	type HighlightMode,
 	type PdfAnnotationSettings,
 } from "./annotation-settings";
+import { makeAnnotationLayerId } from "./annotation-layers";
 import { resolveDataFilePath } from "./annotation-store";
 import type { PdfAnnotationsController } from "./controller";
+import { LayerDeleteModal } from "./layer-delete-modal";
 
 export class PdfAnnotationSettingTab extends PluginSettingTab {
 	constructor(
@@ -22,7 +24,11 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		const settings: PdfAnnotationSettings = { ...this.controller.settings };
+		const settings: PdfAnnotationSettings = {
+			...this.controller.settings,
+			palette: this.controller.settings.palette.map((slot) => ({ ...slot })),
+			layers: this.controller.settings.layers.map((layer) => ({ ...layer })),
+		};
 		const commit = () => void this.controller.saveSettings(settings);
 
 		containerEl.createEl("h3", { text: "批注数据" });
@@ -47,6 +53,77 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 			);
 		const resolved = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
 		resolved.setText(`实际文件:${this.controller.store.filePath}`);
+
+		const layerHeader = new Setting(containerEl)
+			.setName("批注图层")
+			.setDesc("一条批注可同时属于多个图层；正文只保存一份，在任何图层修改都会同步。")
+			.addButton((button) =>
+				button.setButtonText("添加图层").onClick(() => {
+					settings.layers = [
+						...settings.layers,
+						{
+							id: makeAnnotationLayerId(settings.layers.map((layer) => layer.id)),
+							name: `图层 ${settings.layers.length + 1}`,
+						},
+					];
+					commit();
+					renderLayerRows();
+				})
+			);
+		layerHeader.controlEl.addClass("margin-notes-pdf-palette-add");
+		const layerRows = containerEl.createDiv("margin-notes-pdf-layer-settings");
+		const renderLayerRows = () => {
+			layerRows.empty();
+			settings.layers.forEach((layer, index) => {
+				const row = new Setting(layerRows).setName(`图层 ${index + 1}`);
+				const reorder = row.nameEl.createSpan({ cls: "margin-notes-pdf-palette-reorder" });
+				row.nameEl.prepend(reorder);
+				const addMoveButton = (icon: string, tooltip: string, targetIndex: number) => {
+					const disabled = targetIndex < 0 || targetIndex >= settings.layers.length;
+					const button = reorder.createEl("button", {
+						cls: "clickable-icon margin-notes-pdf-palette-move",
+						attr: { type: "button", "aria-label": tooltip, "aria-disabled": String(disabled) },
+					});
+					setIcon(button, icon);
+					button.disabled = disabled;
+					if (disabled) return;
+					button.addEventListener("click", () => {
+						const next = [...settings.layers];
+						[next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+						settings.layers = next;
+						commit();
+						renderLayerRows();
+					});
+				};
+				addMoveButton("arrow-up", "上移这个图层", index - 1);
+				addMoveButton("arrow-down", "下移这个图层", index + 1);
+				row.addText((input) =>
+					input
+						.setPlaceholder(`图层 ${index + 1}`)
+						.setValue(layer.name)
+						.onChange((value) => {
+							const name = value.trim();
+							if (!name) return;
+							settings.layers[index] = { ...settings.layers[index], name };
+							commit();
+						})
+				);
+				row.addExtraButton((button) =>
+					button
+						.setIcon("trash")
+						.setTooltip("删除图层；批注保留")
+						.onClick(() =>
+							new LayerDeleteModal(this.app, layer.name, () => {
+								settings.layers = settings.layers.filter((item) => item.id !== layer.id);
+								commit();
+								this.controller.store.detachLayerId(layer.id);
+								renderLayerRows();
+							}).open()
+						)
+				);
+			});
+		};
+		renderLayerRows();
 
 		containerEl.createEl("h3", { text: "外观" });
 
@@ -146,6 +223,20 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("收起点直径(px)")
+			.setDesc("批注收起后圆点的屏幕直径。PDF 放大或缩小时保持不变。")
+			.addSlider((s) =>
+				s
+					.setLimits(6, 18, 1)
+					.setValue(settings.dotSize)
+					.setDynamicTooltip()
+					.onChange((v) => {
+						settings.dotSize = v;
+						commit();
+					})
+			);
+
 		new Setting(containerEl).setName("高亮").setHeading();
 
 		containerEl.createEl("p", {
@@ -180,35 +271,83 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
-			.setName("可选颜色")
+		const paletteHeader = new Setting(containerEl)
+			.setName("命名颜色")
 			.setDesc(
-				"给单条批注改颜色时可选的预设色,用空格或逗号分隔的 #RRGGBB。" +
-					"改颜色走的是这组预设,不再弹系统取色盘(那个面板总是跑到窗口角落)。"
+				"批注保存颜色名称对应的稳定标识。以后修改名称或色值，所有使用它的批注一起更新；" +
+					"用上下箭头调整顺序，批注列表按颜色分组时也采用此顺序。"
 			)
-			.addTextArea((t) => {
-				t.inputEl.rows = 2;
-				t.inputEl.style.width = "100%";
-				t.setValue(settings.palette.join(" ")).onChange((v) => {
-					const parsed = parsePalette(v);
-					// Ignore an unparseable/empty entry rather than saving a palette
-					// with nothing in it — that would leave the picker with no colours
-					// and no way back except editing the JSON.
-					if (parsed.length === 0) return;
-					settings.palette = parsed;
+			.addButton((button) =>
+				button.setButtonText("添加颜色").onClick(() => {
+					settings.palette = [
+						...settings.palette,
+						{
+							id: makeColorSlotId(settings.palette.map((slot) => slot.id)),
+							name: `颜色 ${settings.palette.length + 1}`,
+							color: "#808080",
+						},
+					];
 					commit();
-					renderPreview();
-				});
+					renderPaletteRows();
+				})
+			);
+		paletteHeader.controlEl.addClass("margin-notes-pdf-palette-add");
+		const paletteRows = containerEl.createDiv("margin-notes-pdf-palette-settings");
+		const renderPaletteRows = () => {
+			paletteRows.empty();
+			settings.palette.forEach((slot, index) => {
+				const row = new Setting(paletteRows).setName(`颜色 ${index + 1}`);
+				const reorder = row.nameEl.createSpan({ cls: "margin-notes-pdf-palette-reorder" });
+				row.nameEl.prepend(reorder);
+				const addMoveButton = (icon: string, tooltip: string, targetIndex: number) => {
+					const disabled = targetIndex < 0 || targetIndex >= settings.palette.length;
+					const button = reorder.createEl("button", {
+						cls: "clickable-icon margin-notes-pdf-palette-move",
+						attr: { type: "button", "aria-label": tooltip, "aria-disabled": String(disabled) },
+					});
+					setIcon(button, icon);
+					button.disabled = disabled;
+					if (disabled) return;
+					button.addEventListener("click", () => {
+						const next = [...settings.palette];
+						[next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+						settings.palette = next;
+						commit();
+						renderPaletteRows();
+					});
+				};
+				addMoveButton("arrow-up", "上移这个颜色", index - 1);
+				addMoveButton("arrow-down", "下移这个颜色", index + 1);
+				row.addText((input) =>
+					input
+						.setPlaceholder(`颜色 ${index + 1}`)
+						.setValue(slot.name)
+						.onChange((value) => {
+							const name = value.trim();
+							if (!name) return;
+							settings.palette[index] = { ...settings.palette[index], name };
+							commit();
+						})
+				);
+				row.addColorPicker((picker) =>
+					picker.setValue(slot.color).onChange((value) => {
+						settings.palette[index] = { ...settings.palette[index], color: value };
+						commit();
+					})
+				);
+				if (settings.palette.length > 1) {
+					row.addExtraButton((button) =>
+						button.setIcon("trash").setTooltip("删除这个预设颜色").onClick(() => {
+							this.controller.store.detachColorKey(slot.id);
+							settings.palette = settings.palette.filter((_, i) => i !== index);
+							commit();
+							renderPaletteRows();
+						})
+					);
+				}
 			});
-
-		const preview = containerEl.createDiv({ cls: "margin-notes-pdf-palette-preview" });
-		const renderPreview = () => {
-			preview.empty();
-			for (const c of settings.palette) {
-				preview.createDiv({ cls: "margin-notes-pdf-swatch-dot" }).style.background = c;
-			}
 		};
-		renderPreview();
+		renderPaletteRows();
 
 		new Setting(containerEl).setName("轨道批注颜色").addColorPicker((c) =>
 			c.setValue(settings.railColor).onChange((v) => {

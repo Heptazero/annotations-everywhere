@@ -1,6 +1,10 @@
 import { type Editor, Notice, Plugin, type WorkspaceLeaf } from "obsidian";
-import { createMarginNotesExtension } from "./margin-view-plugin";
+import {
+	createMarginNotesExtension,
+} from "./margin-view-plugin";
 import { scanFootnotes } from "./footnote-scan";
+import { normalizeMarkdownMarginSettings, type MarkdownMarginSettings } from "./markdown-margin-settings";
+import { patchPluginData } from "./plugin-data";
 import { ANNOTATION_LIST_VIEW, AnnotationListView } from "./pdf/annotation-list-view";
 import { PdfAnnotationSettingTab } from "./pdf/annotation-settings-tab";
 import { PdfAnnotationsController, type NewNoteForm } from "./pdf/controller";
@@ -8,9 +12,22 @@ import { PairPickerModal } from "./pdf/pair-picker";
 
 export default class MarginNotesPlugin extends Plugin {
 	private pdfAnnotations!: PdfAnnotationsController;
+	private markdownMargin = normalizeMarkdownMarginSettings(undefined);
+	private markdownMarginListeners = new Set<(settings: MarkdownMarginSettings) => void>();
 
 	async onload() {
-		this.registerEditorExtension(createMarginNotesExtension(this.app));
+		const pluginData = (await this.loadData()) as { markdownMargin?: unknown } | null;
+		this.markdownMargin = normalizeMarkdownMarginSettings(pluginData?.markdownMargin);
+		this.registerEditorExtension(
+			createMarginNotesExtension(this.app, {
+				get: () => ({ ...this.markdownMargin }),
+				save: (settings) => this.saveMarkdownMargin(settings),
+				onChange: (listener) => {
+					this.markdownMarginListeners.add(listener);
+					return () => this.markdownMarginListeners.delete(listener);
+				},
+			})
+		);
 
 		this.addCommand({
 			id: "clean-orphan-footnotes",
@@ -61,10 +78,16 @@ export default class MarginNotesPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "pdf-annotation-layer",
+			name: "[PDF] 切换批注图层",
+			callback: () => this.pdfAnnotations.chooseAnnotationLayer(),
+		});
+
+		this.addCommand({
 			id: "pdf-open-counterpart-split",
-			name: "[PDF] 在右侧并排打开对应的译文/原文",
+			name: "[PDF] 在右侧打开共享组中的下一份 PDF",
 			checkCallback: (checking) => {
-				const active = this.pdfAnnotations.hasActivePDFView();
+				const active = this.pdfAnnotations.hasPdfTarget();
 				if (!checking && active) void this.pdfAnnotations.openCounterpartInSplit();
 				return active;
 			},
@@ -72,9 +95,9 @@ export default class MarginNotesPlugin extends Plugin {
 
 		this.addCommand({
 			id: "pdf-switch-counterpart",
-			name: "[PDF] 切换到对应的译文/原文(保持页码和位置)",
+			name: "[PDF] 轮流切换共享组中的 PDF(保持页码和位置)",
 			checkCallback: (checking) => {
-				const active = this.pdfAnnotations.hasActivePDFView();
+				const active = this.pdfAnnotations.hasPdfTarget();
 				if (!checking && active) void this.pdfAnnotations.switchToCounterpart();
 				return active;
 			},
@@ -82,21 +105,21 @@ export default class MarginNotesPlugin extends Plugin {
 
 		this.addCommand({
 			id: "pdf-pair-counterpart",
-			name: "[PDF] 手动关联原文/译文(共用批注)",
+			name: "[PDF] 添加 PDF 到共享批注组",
 			checkCallback: (checking) => {
-				const active = this.pdfAnnotations.hasActivePDFView();
+				const active = this.pdfAnnotations.hasPdfTarget();
 				if (!checking && active) {
 					const candidates = this.pdfAnnotations.pairingCandidates();
-					new PairPickerModal(this.app, candidates, (p) => this.pdfAnnotations.pairManually(p)).open();
+					new PairPickerModal(this.app, candidates, (p) => void this.pdfAnnotations.pairManually(p)).open();
 				}
 				return active;
 			},
 		});
 		this.addCommand({
 			id: "pdf-unpair-counterpart",
-			name: "[PDF] 解除原文/译文关联",
+			name: "[PDF] 解除共享绑定(当前 PDF 保留批注副本)",
 			checkCallback: (checking) => {
-				const active = this.pdfAnnotations.hasActivePDFView();
+				const active = this.pdfAnnotations.canLeaveSharedGroup();
 				if (!checking && active) this.pdfAnnotations.unpairActive();
 				return active;
 			},
@@ -108,7 +131,42 @@ export default class MarginNotesPlugin extends Plugin {
 			name: "[PDF] 打开批注列表面板",
 			callback: () => void this.openAnnotationList(),
 		});
+		this.addCommand({
+			id: "pdf-search-annotations",
+			name: "[PDF] 搜索当前 PDF 的批注",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) void this.openAnnotationList("search");
+				return active;
+			},
+		});
+		this.addCommand({
+			id: "pdf-open-shared-outline",
+			name: "[PDF] 打开共享大纲",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) void this.openAnnotationList("outline");
+				return active;
+			},
+		});
+		this.addCommand({
+			id: "pdf-toggle-double-column-order",
+			name: "[PDF] 切换批注阅读顺序（单栏 / 双栏）",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) this.pdfAnnotations.toggleDoubleColumnOrder();
+				return active;
+			},
+		});
 		this.addRibbonIcon("message-square", "PDF 批注列表", () => void this.openAnnotationList());
+	}
+
+	private saveMarkdownMargin(value: MarkdownMarginSettings): void {
+		const next = normalizeMarkdownMarginSettings(value);
+		if (next.width === this.markdownMargin.width && next.gap === this.markdownMargin.gap) return;
+		this.markdownMargin = next;
+		for (const listener of this.markdownMarginListeners) listener({ ...next });
+		void patchPluginData(this, { markdownMargin: next });
 	}
 
 	private addPdfNoteCommand(id: string, name: string, form: NewNoteForm): void {
@@ -124,16 +182,22 @@ export default class MarginNotesPlugin extends Plugin {
 	}
 
 	/** Reveals the list panel in the right sidebar, reusing an existing one if open. */
-	private async openAnnotationList(): Promise<void> {
+	private async openAnnotationList(action?: "search" | "outline"): Promise<void> {
 		const existing = this.app.workspace.getLeavesOfType(ANNOTATION_LIST_VIEW);
+		let leaf: WorkspaceLeaf;
 		if (existing.length > 0) {
-			await this.app.workspace.revealLeaf(existing[0]);
-			return;
+			leaf = existing[0];
+		} else {
+			const rightLeaf: WorkspaceLeaf | null = this.app.workspace.getRightLeaf(false);
+			if (!rightLeaf) return;
+			leaf = rightLeaf;
+			await leaf.setViewState({ type: ANNOTATION_LIST_VIEW, active: true });
 		}
-		const leaf: WorkspaceLeaf | null = this.app.workspace.getRightLeaf(false);
-		if (!leaf) return;
-		await leaf.setViewState({ type: ANNOTATION_LIST_VIEW, active: true });
 		await this.app.workspace.revealLeaf(leaf);
+		if (leaf.view instanceof AnnotationListView) {
+			if (action === "search") leaf.view.focusSearch();
+			else if (action === "outline") leaf.view.showOutline();
+		}
 	}
 
 	/**

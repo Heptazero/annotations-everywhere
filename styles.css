@@ -1,15 +1,15 @@
 .margin-notes-layer {
 	position: absolute;
 	top: 0;
-	width: 200px;
+	width: calc(var(--margin-notes-md-gap, 12px) + var(--margin-notes-md-width, 176px) + 12px);
 	/* Layer itself must not eat clicks in the margin; boxes re-enable. */
 	pointer-events: none;
 }
 
 .margin-notes-box {
 	position: absolute;
-	left: 12px;
-	width: 176px;
+	left: var(--margin-notes-md-gap, 12px);
+	width: var(--margin-notes-md-width, 176px);
 	box-sizing: border-box;
 	padding: 4px 6px;
 	font-size: 12px;
@@ -24,21 +24,53 @@
 	pointer-events: auto;
 }
 
+/* Both edges control one shared Markdown side-note rail. The handles live
+   inside each box, so themes or narrow panes cannot clip the drag target. */
+.margin-notes-resize {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 7px;
+	cursor: ew-resize;
+	touch-action: none;
+	pointer-events: auto;
+	opacity: 0;
+	background: var(--interactive-accent);
+	transition: opacity 0.1s;
+}
+.margin-notes-resize.is-left {
+	left: 0;
+}
+.margin-notes-resize.is-right {
+	right: 0;
+}
+.margin-notes-box:hover .margin-notes-resize {
+	opacity: 0.32;
+}
+.margin-notes-box .margin-notes-resize:hover,
+.margin-notes-box.is-resizing .margin-notes-resize {
+	opacity: 0.7;
+}
+
 /* Edit mode: plain source text, preserve newlines the user types. */
 .margin-notes-box.is-editing {
 	white-space: pre-wrap;
 	color: var(--text-normal);
 }
 
-.margin-notes-box:focus {
+.margin-notes-box:focus-within {
 	outline: none;
 	box-shadow: 0 0 0 1px var(--interactive-accent);
 }
 
-.margin-notes-box:empty::before {
+.margin-notes-body:empty::before {
 	content: attr(data-placeholder);
 	color: var(--text-faint);
 	font-style: italic;
+}
+
+.margin-notes-body {
+	min-height: 1em;
 }
 
 /* Rendered-Markdown compactness inside the narrow box. */
@@ -63,6 +95,13 @@
 
 /* ---- PDF sticky notes ---- */
 
+/* Left rails and negative-X free notes need real content space. Moving pdf.js's
+   viewer root keeps the page and every page-relative annotation in one
+   coordinate system; scroller padding alone does not move centered PDF pages. */
+.margin-notes-pdf-viewer-shifted {
+	translate: var(--margin-notes-pdf-left-gutter, 0) 0;
+}
+
 .margin-notes-pdf-drawing-box {
 	border: 1.5px dashed var(--interactive-accent);
 	background: rgba(var(--interactive-accent-rgb), 0.1);
@@ -77,8 +116,8 @@
 /* Collapsed form: a small dot. Same entity as the expanded box — clicking expands it. */
 .margin-notes-pdf-dot {
 	position: absolute;
-	width: 12px;
-	height: 12px;
+	width: var(--margin-notes-pdf-dot-size, 12px);
+	height: var(--margin-notes-pdf-dot-size, 12px);
 	border-radius: 50%;
 	cursor: pointer;
 	pointer-events: auto;
@@ -93,6 +132,49 @@
 .margin-notes-pdf-dot:hover {
 	opacity: 1;
 	transform: scale(1.25);
+}
+.margin-notes-pdf-dot.is-linked,
+.margin-notes-pdf-dot.is-pressing,
+.margin-notes-pdf-dot.is-dragging {
+	opacity: 1;
+	transform: scale(1.25);
+}
+.margin-notes-pdf-dot.is-pressing {
+	cursor: progress;
+}
+.margin-notes-pdf-dot.is-dragging {
+	cursor: grabbing;
+	box-shadow: 0 0 0 3px var(--background-primary);
+}
+
+/* Hovering the anchored text reveals a collapsed note here, beside the source
+   range. The preview is deliberately pointer-inert so it never blocks PDF text
+   selection or causes enter/leave flicker while following the cursor. */
+.margin-notes-pdf-collapsed-preview {
+	position: absolute;
+	z-index: 4;
+	box-sizing: border-box;
+	width: max-content;
+	min-width: 120px;
+	max-width: 280px;
+	padding: 6px 8px;
+	border: 1px solid var(--margin-notes-pdf-note-color, var(--interactive-accent));
+	border-radius: 4px;
+	pointer-events: none;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	box-shadow: 0 3px 12px rgba(0, 0, 0, 0.24);
+	white-space: normal;
+	word-break: break-word;
+}
+.margin-notes-pdf-collapsed-preview.is-above {
+	transform: translateY(-100%);
+}
+.margin-notes-pdf-collapsed-preview p {
+	margin: 0;
+}
+.margin-notes-pdf-collapsed-preview p + p {
+	margin-top: 0.4em;
 }
 
 /* Expanded form. */
@@ -115,6 +197,10 @@
 .margin-notes-pdf-note.is-dragging {
 	opacity: 1;
 	z-index: 2;
+}
+.margin-notes-pdf-note.is-editing {
+	height: auto !important;
+	overflow: visible;
 }
 .margin-notes-pdf-note.is-dragging {
 	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
@@ -303,7 +389,25 @@
 }
 .margin-notes-pdf-note.is-editing .margin-notes-pdf-body {
 	white-space: pre-wrap;
-	font-family: var(--font-monospace);
+	font-family: inherit;
+	line-height: inherit;
+}
+.margin-notes-pdf-editor {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 48px;
+	margin: 0;
+	padding: 0;
+	resize: none;
+	overflow: hidden;
+	border: 0;
+	outline: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	line-height: inherit;
+	white-space: pre-wrap;
 }
 .margin-notes-pdf-body:empty::before {
 	content: attr(data-placeholder);
@@ -390,17 +494,288 @@
 	min-height: 100%;
 	background: var(--background-primary);
 }
+.margin-notes-pdf-list-title-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-bottom: 8px;
+}
 .margin-notes-pdf-list-title {
+	min-width: 0;
+	flex: 1 1 auto;
 	font-weight: 600;
 	font-size: 13px;
-	margin-bottom: 8px;
 	color: var(--text-normal);
 	word-break: break-word;
+}
+.margin-notes-pdf-list-view-segments {
+	box-sizing: border-box;
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(2, 26px);
+	flex: 0 0 auto;
+	height: 26px;
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+.margin-notes-pdf-list-view-segments::before {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 26px;
+	height: 20px;
+	border-radius: 4px;
+	background: var(--interactive-accent);
+	box-shadow: var(--shadow-s);
+	transition: transform 0.16s ease;
+}
+.margin-notes-pdf-list-view-segments[data-mode="outline"]::before {
+	transform: translateX(26px);
+}
+.margin-notes-pdf-list-view-button {
+	position: relative;
+	z-index: 1;
+	width: 26px;
+	height: 20px;
+	padding: 3px;
+	border: 0;
+	background: transparent;
+	color: var(--text-muted);
+}
+.margin-notes-pdf-list-view-button:hover {
+	background: transparent;
+}
+.margin-notes-pdf-list-view-button[aria-pressed="true"] {
+	color: var(--text-on-accent);
+}
+.margin-notes-pdf-list-view-button .svg-icon {
+	width: 13px;
+	height: 13px;
 }
 .margin-notes-pdf-list-empty {
 	color: var(--text-faint);
 	font-size: 12px;
 	font-style: italic;
+}
+.margin-notes-pdf-list-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0 0 6px;
+}
+.margin-notes-pdf-list-search {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	flex: 1 1 auto;
+	height: 26px;
+	padding: 0 3px 0 7px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 5px;
+	background: var(--background-primary-alt);
+}
+.margin-notes-pdf-list-search:focus-within {
+	border-color: var(--background-modifier-border-focus);
+	box-shadow: 0 0 0 1px var(--background-modifier-border-focus);
+}
+.margin-notes-pdf-list-search-icon {
+	display: flex;
+	flex: 0 0 auto;
+	color: var(--text-faint);
+}
+.margin-notes-pdf-list-search-icon .svg-icon {
+	width: 13px;
+	height: 13px;
+}
+.margin-notes-pdf-list-search input[type="search"] {
+	min-width: 0;
+	flex: 1 1 auto;
+	height: 24px;
+	padding: 0 5px;
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+	font-size: 11px;
+}
+.margin-notes-pdf-list-search input[type="search"]::-webkit-search-cancel-button {
+	display: none;
+}
+.margin-notes-pdf-list-search-count {
+	flex: 0 0 auto;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+.margin-notes-pdf-list-search-clear {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	padding: 3px;
+}
+.margin-notes-pdf-list-search-clear .svg-icon {
+	width: 12px;
+	height: 12px;
+}
+.margin-notes-pdf-list-layer-button {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	max-width: 84px;
+	height: 26px;
+	padding: 3px 6px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	color: var(--text-muted);
+}
+.margin-notes-pdf-list-layer-button.is-active {
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+}
+.margin-notes-pdf-list-layer-icon {
+	display: flex;
+	flex: 0 0 auto;
+}
+.margin-notes-pdf-list-layer-icon .svg-icon {
+	width: 13px;
+	height: 13px;
+}
+.margin-notes-pdf-list-layer-name {
+	overflow: hidden;
+	min-width: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 10px;
+}
+.margin-notes-pdf-list-group-segments {
+	box-sizing: border-box;
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(2, 26px);
+	height: 26px;
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+.margin-notes-pdf-list-group-segments::before {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 26px;
+	height: 20px;
+	border-radius: 4px;
+	background: var(--interactive-accent);
+	box-shadow: var(--shadow-s);
+	transition: transform 0.16s ease;
+}
+.margin-notes-pdf-list-group-segments[data-mode="color"]::before {
+	transform: translateX(26px);
+}
+.margin-notes-pdf-list-group-button {
+	position: relative;
+	z-index: 1;
+	width: 26px;
+	height: 20px;
+	padding: 3px;
+	border: 0;
+	background: transparent;
+	color: var(--text-muted);
+}
+.margin-notes-pdf-list-group-button:hover {
+	background: transparent;
+}
+.margin-notes-pdf-list-group-button[aria-pressed="true"] {
+	color: var(--text-on-accent);
+}
+.margin-notes-pdf-list-group-button .svg-icon {
+	width: 13px;
+	height: 13px;
+}
+
+.margin-notes-pdf-outline-source {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	margin-bottom: 6px;
+	padding: 4px 6px;
+	border-radius: 4px;
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: 10px;
+}
+.margin-notes-pdf-outline-source-icon {
+	display: flex;
+	flex: 0 0 auto;
+}
+.margin-notes-pdf-outline-source-icon .svg-icon {
+	width: 12px;
+	height: 12px;
+}
+.margin-notes-pdf-outline-source-name {
+	overflow: hidden;
+	min-width: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.margin-notes-pdf-outline-tree {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.margin-notes-pdf-outline-row {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 3px;
+	min-height: 26px;
+	padding: 4px 5px 4px var(--margin-notes-pdf-outline-indent);
+	border-radius: 4px;
+	color: var(--text-normal);
+	font-size: 12px;
+}
+.margin-notes-pdf-outline-row.is-clickable {
+	cursor: pointer;
+}
+.margin-notes-pdf-outline-row.is-clickable:hover {
+	background: var(--background-modifier-hover);
+}
+.margin-notes-pdf-outline-chevron,
+.margin-notes-pdf-outline-chevron-spacer {
+	width: 16px;
+	height: 16px;
+}
+.margin-notes-pdf-outline-chevron {
+	padding: 2px;
+	color: var(--text-faint);
+	transition: transform 0.12s;
+}
+.margin-notes-pdf-outline-chevron.is-collapsed {
+	transform: rotate(-90deg);
+}
+.margin-notes-pdf-outline-chevron .svg-icon {
+	width: 12px;
+	height: 12px;
+}
+.margin-notes-pdf-outline-title {
+	min-width: 0;
+	line-height: 17px;
+	word-break: break-word;
+}
+.margin-notes-pdf-outline-page {
+	min-width: 18px;
+	padding: 0 5px;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--text-faint);
+	font-size: 10px;
+	line-height: 17px;
+	text-align: center;
 }
 
 .margin-notes-pdf-page-group {
@@ -435,6 +810,13 @@
 	font-size: 12px;
 	color: var(--text-normal);
 }
+.margin-notes-pdf-color-swatch {
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1px var(--background-modifier-border);
+	flex: 0 0 auto;
+}
 .margin-notes-pdf-page-count {
 	font-size: 10px;
 	color: var(--text-faint);
@@ -466,6 +848,11 @@
 .margin-notes-pdf-list-row[data-mode="free"] {
 	border-left-color: var(--margin-notes-pdf-note-color, var(--margin-notes-pdf-free-color, var(--interactive-accent)));
 }
+.margin-notes-pdf-list-row-page {
+	margin-bottom: 2px;
+	font-size: 10px;
+	color: var(--text-faint);
+}
 
 /* In the list the actions sit centred against the row's RIGHT edge rather than
    in the top-right corner: rows are short and wide, so a corner badge reads as
@@ -495,7 +882,7 @@
 /* Reserve the right-hand strip permanently rather than only on hover — growing
    the padding on hover would reflow the note's text under the cursor. */
 .margin-notes-pdf-list-row .margin-notes-pdf-body {
-	padding-right: 48px;
+	padding-right: 42px;
 }
 
 /* "Shares annotations with <the other language>" banner in the list panel. */
@@ -520,6 +907,15 @@
 	display: flex;
 	flex: 0 0 auto;
 }
+.margin-notes-pdf-list-pair-label {
+	flex: 1 1 auto;
+}
+.margin-notes-pdf-list-unpair {
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	padding: 3px;
+}
 .margin-notes-pdf-list-pair-icon .svg-icon {
 	width: 12px;
 	height: 12px;
@@ -536,6 +932,13 @@
 .margin-notes-pdf-switching {
 	transition: opacity 0.18s ease;
 	opacity: 0.15;
+}
+
+/* pdf.js briefly transforms page DOM while changing scale, but this annotation
+   layer is its sibling. Hide stale geometry until annotation-layer.ts has
+   measured the final page boxes, then reveal it in one frame without drift. */
+.margin-notes-pdf-layer.is-zooming {
+	visibility: hidden;
 }
 
 /* ---- Highlight modes (settings.highlightMode) ---- */
@@ -648,6 +1051,29 @@
 .margin-notes-pdf-swatch-reset:hover {
 	background: var(--background-modifier-hover);
 	color: var(--text-normal);
+}
+
+/* This arrow pair sits before the label to keep the right-aligned fields even;
+   it is a local alignment choice, not a rule that sorting belongs on the left. */
+.margin-notes-pdf-palette-settings .setting-item-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.margin-notes-pdf-palette-reorder {
+	display: grid;
+	grid-template-columns: repeat(2, 22px);
+	flex: 0 0 46px;
+	gap: 2px;
+}
+.margin-notes-pdf-palette-move {
+	width: 22px;
+	height: 22px;
+	padding: 3px;
+}
+.margin-notes-pdf-palette-move:disabled {
+	opacity: 0.25;
+	cursor: default;
 }
 
 .margin-notes-pdf-palette-preview {

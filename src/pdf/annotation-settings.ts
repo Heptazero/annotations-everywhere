@@ -1,3 +1,17 @@
+import type { PdfAnnotation } from "./annotation-types";
+import {
+	DEFAULT_ANNOTATION_LAYERS,
+	normalizeAnnotationLayers,
+	type AnnotationLayerDefinition,
+} from "./annotation-layers";
+
+export interface AnnotationColorSlot {
+	/** Stable storage key. Names and colour values may change without touching notes. */
+	id: string;
+	name: string;
+	color: string;
+}
+
 export interface PdfAnnotationSettings {
 	/**
 	 * Where the annotations JSON lives, vault-relative. A path with no `.json`
@@ -38,6 +52,8 @@ export interface PdfAnnotationSettings {
 	railGapRight: number;
 	/** Base font size in px at 100% zoom. Every note scales this with the page's zoom. */
 	fontSize: number;
+	/** Collapsed annotation dot diameter in screen px. It stays fixed while the PDF zoom changes. */
+	dotSize: number;
 	/** How the link between a note and the text it refers to is shown. */
 	highlightMode: HighlightMode;
 	/** 0-100, applied to the highlight band only (notes have their own `opacity`). */
@@ -50,7 +66,11 @@ export interface PdfAnnotationSettings {
 	 * short fixed palette is faster to use and keeps a document's annotations
 	 * visually coherent.
 	 */
-	palette: string[];
+	palette: AnnotationColorSlot[];
+	/** Named annotation views. Membership is stored on each annotation by opaque id. */
+	layers: AnnotationLayerDefinition[];
+	/** PDF path → page-centre X in PDF points. Absence means ordinary single-column order. */
+	doubleColumnSplits: Record<string, number>;
 }
 
 /**
@@ -85,18 +105,33 @@ export function darken(hex: string, amount = 0.4): string {
 	return `#${ch.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** Accepts "#abc123, #def456" or whitespace/newline separated; drops junk. */
-export function parsePalette(raw: string): string[] {
-	return raw
-		.split(/[\s,]+/)
-		.map((t) => t.trim())
-		.filter((t) => /^#[\da-f]{6}$/i.test(t));
-}
-
 /** True for every mode where pointing at the TEXT should light up its note. */
 export function highlightsBothWays(mode: HighlightMode): boolean {
 	return mode !== "note";
 }
+
+/** Pre-v0.33 semantic keys, accepted only for one-time migration. */
+export const LEGACY_COLOR_KEY_MAP: Readonly<Record<string, string>> = {
+	general: "clr-2f6a1c9d",
+	concept: "clr-7b84e205",
+	evidence: "clr-a3d9f671",
+	question: "clr-c54e8b20",
+	connection: "clr-1d7fa693",
+	method: "clr-e8264c5b",
+	history: "clr-49bc72a1",
+	secondary: "clr-935de4f8",
+};
+
+export const DEFAULT_COLOR_SLOTS: AnnotationColorSlot[] = [
+	{ id: LEGACY_COLOR_KEY_MAP.general, name: "论述作用", color: "#eed37c" },
+	{ id: LEGACY_COLOR_KEY_MAP.concept, name: "定义与建模", color: "#7d94ca" },
+	{ id: LEGACY_COLOR_KEY_MAP.evidence, name: "机制与结论", color: "#8fbf8f" },
+	{ id: LEGACY_COLOR_KEY_MAP.question, name: "边界与疑问", color: "#d98f8f" },
+	{ id: LEGACY_COLOR_KEY_MAP.connection, name: "类比与拓展", color: "#b998d4" },
+	{ id: LEGACY_COLOR_KEY_MAP.method, name: "推导步骤", color: "#7fbfc4" },
+	{ id: LEGACY_COLOR_KEY_MAP.history, name: "文献与来源", color: "#c9a37a" },
+	{ id: LEGACY_COLOR_KEY_MAP.secondary, name: "实验与结果", color: "#9aa0a6" },
+];
 
 export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	dataPath: ".margin-notes-hz",
@@ -108,13 +143,18 @@ export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	railGapLeft: 10,
 	railGapRight: 10,
 	fontSize: 12,
+	dotSize: 12,
 	highlightMode: "note",
 	highlightOpacity: 30,
-	palette: ["#eed37c", "#7d94ca", "#8fbf8f", "#d98f8f", "#b998d4", "#7fbfc4", "#c9a37a", "#9aa0a6"],
+	palette: DEFAULT_COLOR_SLOTS,
+	layers: DEFAULT_ANNOTATION_LAYERS,
+	doubleColumnSplits: {},
 };
 
 interface StoredShape {
-	pdfAnnotationSettings?: Partial<PdfAnnotationSettings> & {
+	pdfAnnotationSettings?: Omit<Partial<PdfAnnotationSettings>, "palette" | "layers"> & {
+		palette?: unknown[];
+		layers?: unknown;
 		// pre-0.4 names
 		marginWidth?: number;
 		marginColor?: string;
@@ -144,9 +184,89 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 		railColor: raw.railColor ?? raw.marginColor ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railColor,
 		freeColor: raw.freeColor ?? raw.floatingColor ?? DEFAULT_PDF_ANNOTATION_SETTINGS.freeColor,
 		opacity: raw.opacity ?? raw.marginOpacity ?? DEFAULT_PDF_ANNOTATION_SETTINGS.opacity,
-		// An empty palette would leave the picker with nothing to offer.
-		palette: raw.palette && raw.palette.length > 0 ? raw.palette : DEFAULT_PDF_ANNOTATION_SETTINGS.palette,
+		dotSize: normalizeDotSize(raw.dotSize),
+		palette: normalizeColorSlots(raw.palette),
+		layers: normalizeAnnotationLayers(raw.layers),
+		doubleColumnSplits: normalizeDoubleColumnSplits(raw.doubleColumnSplits),
 	};
+}
+
+function normalizeDoubleColumnSplits(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const normalized: Record<string, number> = {};
+	for (const [path, split] of Object.entries(value)) {
+		if (path.trim() && typeof split === "number" && Number.isFinite(split)) normalized[path] = split;
+	}
+	return normalized;
+}
+
+/** Keep the dot visible and draggable without letting malformed saved data break layout. */
+function normalizeDotSize(value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_PDF_ANNOTATION_SETTINGS.dotSize;
+	return Math.max(6, Math.min(18, Math.round(value)));
+}
+
+function normalizeColorSlots(raw: unknown[] | undefined): AnnotationColorSlot[] {
+	if (!raw || raw.length === 0) return DEFAULT_COLOR_SLOTS.map((slot) => ({ ...slot }));
+	const used = new Set<string>();
+	const slots = raw.flatMap((item, index) => {
+		if (typeof item === "string" && /^#[\da-f]{6}$/i.test(item)) {
+			const byValue = DEFAULT_COLOR_SLOTS.find((slot) => slot.color.toLowerCase() === item.toLowerCase());
+			const known = byValue && !used.has(byValue.id) ? byValue : DEFAULT_COLOR_SLOTS[index];
+			const id = uniqueSlotId(known?.id ?? `legacy-${index + 1}`, used);
+			return [{ id, name: known?.name ?? `颜色 ${index + 1}`, color: item.toLowerCase() }];
+		}
+		if (!item || typeof item !== "object") return [];
+		const candidate = item as Partial<AnnotationColorSlot>;
+		if (!candidate.color || !/^#[\da-f]{6}$/i.test(candidate.color)) return [];
+		const storedId = candidate.id?.trim();
+		const id = uniqueSlotId((storedId && LEGACY_COLOR_KEY_MAP[storedId]) || storedId || makeColorSlotId(used), used);
+		return [{ id, name: candidate.name?.trim() || `颜色 ${index + 1}`, color: candidate.color.toLowerCase() }];
+	});
+	return slots.length > 0 ? slots : DEFAULT_COLOR_SLOTS.map((slot) => ({ ...slot }));
+}
+
+/** Opaque identity: generated once, then persisted; no name/colour meaning. */
+export function makeColorSlotId(existing: Iterable<string> = []): string {
+	const used = new Set(existing);
+	let id = "";
+	do {
+		const bytes = crypto.getRandomValues(new Uint8Array(8));
+		id = `clr-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+	} while (used.has(id));
+	return id;
+}
+
+function uniqueSlotId(base: string, used: Set<string>): string {
+	const root = base.replace(/[^a-zA-Z0-9_-]+/g, "-") || "color";
+	let id = root;
+	let suffix = 2;
+	while (used.has(id)) id = `${root}-${suffix++}`;
+	used.add(id);
+	return id;
+}
+
+export function colorSlot(settings: PdfAnnotationSettings, key: string | undefined): AnnotationColorSlot | undefined {
+	return key ? settings.palette.find((slot) => slot.id === key) : undefined;
+}
+
+/**
+ * Display rank shared by every colour-oriented UI. Named slots follow the
+ * exact order chosen in Settings; notes using the rail/free defaults follow
+ * afterwards because those defaults are not reorderable palette entries.
+ */
+export function annotationColorOrder(
+	ann: Pick<PdfAnnotation, "colorKey" | "pinned">,
+	settings: PdfAnnotationSettings
+): number {
+	const slotIndex = ann.colorKey ? settings.palette.findIndex((slot) => slot.id === ann.colorKey) : -1;
+	if (slotIndex >= 0) return slotIndex;
+	return settings.palette.length + (ann.pinned ? 0 : 1);
+}
+
+/** Named slot wins; legacy/custom literal colour remains a supported fallback. */
+export function resolveAnnotationColor(ann: Pick<PdfAnnotation, "colorKey" | "pinned">, settings: PdfAnnotationSettings): string {
+	return colorSlot(settings, ann.colorKey)?.color ?? (ann.pinned ? settings.railColor : settings.freeColor);
 }
 
 /**

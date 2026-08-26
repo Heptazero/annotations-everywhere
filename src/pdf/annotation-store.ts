@@ -1,9 +1,27 @@
-import { debounce, normalizePath, type App, type Plugin } from "obsidian";
+import { debounce, normalizePath, TFile, type App, type Plugin } from "obsidian";
+import {
+	DEFAULT_COLOR_SLOTS,
+	LEGACY_COLOR_KEY_MAP,
+	makeColorSlotId,
+	type AnnotationColorSlot,
+} from "./annotation-settings";
 import { normalizeAnnotation, type PdfAnnotation } from "./annotation-types";
-import type { PdfFingerprint } from "./counterpart";
+import {
+	annotationListsConflict,
+	detachDeletedFile,
+	downgradeToLinked,
+	groupMembers,
+	joinSharedGroups,
+	mergeAnnotationLists,
+	relationMode,
+	sharedKey,
+	unpairFile,
+	type PairMode,
+	type SharedStrategy,
+} from "./pairing-state";
 
 interface FileShape {
-	version: 3;
+	version: number;
 	/**
 	 * Annotations, keyed by GROUP rather than by path — a paper and its
 	 * layout-preserving translation resolve to the same key, so annotating
@@ -11,10 +29,19 @@ interface FileShape {
 	 * sync. See `pairs`.
 	 */
 	pdfAnnotations: Record<string, PdfAnnotation[]>;
-	/** member path → group key (the source-language side of the pair). */
+	/** member path → group key (the PDF from which manual pairing was started). */
 	pairs: Record<string, string>;
-	/** Cached per-file geometry/script, gathered from viewers as files are opened. */
-	fingerprints: Record<string, PdfFingerprint>;
+	/** v6 groups are always shared; `linked` is accepted only for v5 migration. */
+	pairModes: Record<string, PairMode>;
+	/** File revision markers used only to decide when a layout must be rechecked. */
+	pairRevisions: Record<string, Record<string, FileRevision>>;
+	/** Present only in v3 input and deliberately discarded during migration. */
+	fingerprints?: unknown;
+}
+
+interface FileRevision {
+	mtime: number;
+	size: number;
 }
 
 const FILE_NAME = "annotations.json";
@@ -32,6 +59,11 @@ export function resolveDataFilePath(configured: string): string {
 
 export type StoreListener = () => void;
 
+export interface ColorKeyMigration {
+	annotations: number;
+	addedSlots: number;
+}
+
 /**
  * Owns the persisted PDF annotations, stored as one plain JSON file inside the
  * vault so it travels with whatever already syncs the notes.
@@ -43,10 +75,16 @@ export type StoreListener = () => void;
  * annotation history in memory forever. */
 const MAX_HISTORY = 100;
 
+function cloneAnnotation(ann: PdfAnnotation): PdfAnnotation {
+	return { ...ann, layerIds: ann.layerIds ? [...ann.layerIds] : undefined };
+}
+
 export class PdfAnnotationStore {
 	private data: Record<string, PdfAnnotation[]> = {};
 	private pairs: Record<string, string> = {};
-	private fingerprints: Record<string, PdfFingerprint> = {};
+	private pairModes: Record<string, PairMode> = {};
+	private pairRevisions: Record<string, Record<string, FileRevision>> = {};
+	private migratedLegacyGroups = 0;
 	private path = "";
 	private listeners = new Set<StoreListener>();
 	private save = debounce(() => void this.flush(), 500, true);
@@ -59,7 +97,7 @@ export class PdfAnnotationStore {
 	 * copies. An operation log would need an exact inverse for every future
 	 * mutation, and one missing inverse corrupts everything after it.
 	 *
-	 * `pairs`/`fingerprints` are deliberately NOT covered: they describe which
+	 * `pairs` are deliberately NOT covered: they describe which
 	 * files belong together, not the user's writing, and silently un-pairing two
 	 * documents because someone pressed Cmd+Z after deleting a note would be a
 	 * surprise rather than an undo.
@@ -76,6 +114,10 @@ export class PdfAnnotationStore {
 		return this.path;
 	}
 
+	get legacyGroupsDowngraded(): number {
+		return this.migratedLegacyGroups;
+	}
+
 	onChange(listener: StoreListener): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -85,9 +127,14 @@ export class PdfAnnotationStore {
 		for (const l of this.listeners) l();
 	}
 
+	/** Repaint store consumers after settings-only changes such as a named colour. */
+	notifyAppearanceChanged(): void {
+		this.notify();
+	}
+
 	private snapshot(): Record<string, PdfAnnotation[]> {
 		const copy: Record<string, PdfAnnotation[]> = {};
-		for (const [k, list] of Object.entries(this.data)) copy[k] = list.map((a) => ({ ...a }));
+		for (const [k, list] of Object.entries(this.data)) copy[k] = list.map(cloneAnnotation);
 		return copy;
 	}
 
@@ -95,6 +142,11 @@ export class PdfAnnotationStore {
 	private pushHistory(): void {
 		this.undoStack.push(this.snapshot());
 		if (this.undoStack.length > MAX_HISTORY) this.undoStack.shift();
+		this.redoStack.length = 0;
+	}
+
+	private clearHistory(): void {
+		this.undoStack.length = 0;
 		this.redoStack.length = 0;
 	}
 
@@ -125,7 +177,7 @@ export class PdfAnnotationStore {
 		return true;
 	}
 
-	private adopt(parsed: Partial<FileShape>): void {
+	private adopt(parsed: Partial<FileShape>): boolean {
 		this.undoStack.length = 0;
 		this.redoStack.length = 0;
 		this.data = {};
@@ -133,8 +185,32 @@ export class PdfAnnotationStore {
 			this.data[key] = ((list ?? []) as unknown[]).map((a) => normalizeAnnotation(a as never));
 		}
 		// Absent in v1/v2 files — an unpaired library is just an empty map.
-		this.pairs = parsed?.pairs ?? {};
-		this.fingerprints = parsed?.fingerprints ?? {};
+		this.pairs = { ...(parsed?.pairs ?? {}) };
+		this.pairModes = {};
+		this.pairRevisions = parsed.pairRevisions ?? {};
+		this.migratedLegacyGroups = 0;
+		for (const group of new Set(Object.values(this.pairs))) {
+			this.pairModes[group] = parsed.pairModes?.[group] ?? "shared";
+		}
+
+		// v6 has one user-facing relation: a verified shared group. Old navigation-
+		// only (`linked`) groups are dissolved while their independent annotations
+		// remain untouched. Pre-v5 shared buckets were never fully layout-checked,
+		// so first materialize them to every member, then dissolve them as well.
+		for (const group of [...new Set(Object.values(this.pairs))]) {
+			const member = Object.keys(this.pairs).find((path) => this.pairs[path] === group);
+			if (!member) continue;
+			if ((parsed.version ?? 0) < 5 && (this.pairModes[group] ?? "shared") === "shared") {
+				downgradeToLinked({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, member);
+			}
+			if ((this.pairModes[group] ?? "shared") === "linked") {
+				unpairFile({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, member);
+				this.migratedLegacyGroups++;
+			}
+		}
+		if ((parsed.version ?? 0) < 5) this.pairRevisions = {};
+		this.prunePairRevisions();
+		return parsed.version !== 9 || parsed.fingerprints !== undefined || this.migratedLegacyGroups > 0;
 	}
 
 	/** Loads from `configuredPath`, migrating anything left at older locations. */
@@ -151,7 +227,8 @@ export class PdfAnnotationStore {
 				// save — refuse to load rather than starting from an empty object.
 				throw new Error(`margin-notes-hz: 批注文件解析失败,请检查 ${this.path}`);
 			}
-			this.adopt(parsed);
+			const migrated = this.adopt(parsed);
+			if (migrated) await this.flush();
 			return;
 		}
 
@@ -195,10 +272,11 @@ export class PdfAnnotationStore {
 		const dir = this.path.includes("/") ? this.path.slice(0, this.path.lastIndexOf("/")) : "";
 		if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
 		const payload: FileShape = {
-			version: 3,
+			version: 9,
 			pdfAnnotations: this.data,
 			pairs: this.pairs,
-			fingerprints: this.fingerprints,
+			pairModes: this.pairModes,
+			pairRevisions: this.pairRevisions,
 		};
 		await adapter.write(this.path, JSON.stringify(payload, null, 2));
 	}
@@ -206,70 +284,251 @@ export class PdfAnnotationStore {
 	/** Resolves a path to the bucket it shares with its counterpart, if paired. */
 	private key(pdfPath: string): string {
 		const p = normalizePath(pdfPath);
-		return this.pairs[p] ?? p;
+		return sharedKey({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, p);
 	}
 
-	getFingerprint(pdfPath: string): PdfFingerprint | undefined {
-		return this.fingerprints[normalizePath(pdfPath)];
+	/** All files in the same shared group, including `pdfPath` itself. */
+	sharedMembers(pdfPath: string): string[] {
+		return groupMembers(this.pairs, normalizePath(pdfPath));
 	}
 
-	setFingerprint(pdfPath: string, fp: PdfFingerprint): void {
-		const p = normalizePath(pdfPath);
-		const prev = this.fingerprints[p];
-		// Compare every field, `cjk` included: it is refined as further pages are
-		// sampled, and skipping the write on unchanged geometry alone would pin
-		// the ratio to whatever the first page happened to show.
-		if (prev && prev.pages === fp.pages && prev.width === fp.width && prev.height === fp.height && prev.cjk === fp.cjk) {
-			return;
-		}
-		this.fingerprints[p] = fp;
-		this.save();
-	}
-
-	/** The other member of `pdfPath`'s pair, if one has been established. */
-	counterpartOf(pdfPath: string): string | null {
-		const p = normalizePath(pdfPath);
-		const group = this.pairs[p];
-		if (!group) return null;
-		const other = Object.keys(this.pairs).find((k) => this.pairs[k] === group && k !== p);
-		return other ?? (group === p ? null : group);
+	/** Persisted member paths, used to reconcile folder moves and delayed deletes. */
+	pairedPaths(): string[] {
+		return Object.keys(this.pairs);
 	}
 
 	isPaired(pdfPath: string): boolean {
 		return normalizePath(pdfPath) in this.pairs;
 	}
 
+	relationMode(pdfPath: string): PairMode | null {
+		return relationMode(
+			{ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes },
+			normalizePath(pdfPath)
+		);
+	}
+
+	annotationCount(pdfPath: string): number {
+		return this.forFile(pdfPath).length;
+	}
+
 	/**
-	 * Links two files onto one bucket, merging whatever either already had.
-	 * `canonical` must be one of the two; it names the shared bucket.
+	 * One-time upgrade: every literal annotation colour becomes a stable named
+	 * reference. Unknown literals get their own slot; the persisted annotation
+	 * schema therefore never needs a second colour representation.
 	 */
-	pair(a: string, b: string, canonical: string): void {
+	migrateColorKeys(slots: AnnotationColorSlot[]): ColorKeyMigration {
+		const byColor = new Map(slots.map((slot) => [slot.color.toLowerCase(), slot.id]));
+		// If a user already changed an old palette entry before this migration,
+		// existing notes still carry its former default hex. Stable default ids let
+		// that old value find the renamed/recoloured slot by identity, not value.
+		for (const legacy of DEFAULT_COLOR_SLOTS) {
+			if (slots.some((slot) => slot.id === legacy.id)) byColor.set(legacy.color.toLowerCase(), legacy.id);
+		}
+		let changed = 0;
+		let addedSlots = 0;
+		for (const list of Object.values(this.data)) {
+			for (const ann of list) {
+				const upgradedKey = ann.colorKey ? LEGACY_COLOR_KEY_MAP[ann.colorKey] : undefined;
+				if (upgradedKey) {
+					ann.colorKey = slots.some((slot) => slot.id === upgradedKey) ? upgradedKey : undefined;
+					changed++;
+				}
+				const legacyColor = (ann as PdfAnnotation & { color?: string }).color;
+				if (!legacyColor) continue;
+				const normalized = legacyColor.toLowerCase();
+				if (!/^#[\da-f]{6}$/.test(normalized)) {
+					delete (ann as PdfAnnotation & { color?: string }).color;
+					changed++;
+					continue;
+				}
+				let key = byColor.get(normalized);
+				if (!key) {
+					key = makeColorSlotId(slots.map((slot) => slot.id));
+					slots.push({ id: key, name: `旧颜色 ${normalized}`, color: normalized });
+					byColor.set(normalized, key);
+					addedSlots++;
+				}
+				if (!ann.colorKey) ann.colorKey = key;
+				delete (ann as PdfAnnotation & { color?: string }).color;
+				changed++;
+			}
+		}
+		if (changed > 0) {
+			this.save();
+			this.notify();
+		}
+		return { annotations: changed, addedSlots };
+	}
+
+	/** Deleting a slot removes the assignment; affected notes follow their default. */
+	detachColorKey(key: string): number {
+		let changed = 0;
+		for (const list of Object.values(this.data)) {
+			for (const ann of list) {
+				if (ann.colorKey !== key) continue;
+				ann.colorKey = undefined;
+				changed++;
+			}
+		}
+		if (changed > 0) {
+			this.save();
+			this.notify();
+		}
+		return changed;
+	}
+
+	/** Removes one layer membership everywhere; annotations themselves are never deleted. */
+	detachLayerId(layerId: string): number {
+		let changed = 0;
+		for (const list of Object.values(this.data)) {
+			for (const ann of list) {
+				if (!ann.layerIds?.includes(layerId)) continue;
+				changed++;
+			}
+		}
+		if (changed === 0) return 0;
+		this.pushHistory();
+		for (const list of Object.values(this.data)) {
+			for (const ann of list) {
+				if (!ann.layerIds?.includes(layerId)) continue;
+				const remaining = ann.layerIds.filter((id) => id !== layerId);
+				ann.layerIds = remaining.length > 0 ? remaining : undefined;
+				ann.updatedAt = Date.now();
+			}
+		}
+		this.save();
+		this.notify();
+		return changed;
+	}
+
+	annotationConflict(a: string, b: string): boolean {
+		return annotationListsConflict(this.forFile(a), this.forFile(b));
+	}
+
+	/** Add a file or an existing shared group to the current N-member group. */
+	joinShared(a: string, b: string, strategy: SharedStrategy = "merge"): void {
 		const pa = normalizePath(a);
 		const pb = normalizePath(b);
-		const key = normalizePath(canonical);
-		if (this.pairs[pa] === key && this.pairs[pb] === key) return;
-
-		const merged = [...(this.data[pa] ?? []), ...(this.data[pb] ?? []), ...(this.data[key] ?? [])];
-		const seen = new Set<string>();
-		const deduped = merged.filter((ann) => !seen.has(ann.id) && seen.add(ann.id));
-
-		if (pa !== key) delete this.data[pa];
-		if (pb !== key) delete this.data[pb];
-		if (deduped.length > 0) this.data[key] = deduped;
-
-		this.pairs[pa] = key;
-		this.pairs[pb] = key;
+		joinSharedGroups({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, pa, pb, strategy);
+		this.clearHistory();
+		this.prunePairRevisions();
+		const group = this.pairs[pa];
+		if (group) this.captureGroupRevisions(group);
 		this.save();
 		this.notify();
 	}
 
-	unpair(pdfPath: string): void {
+	/** Current file leaves; remaining members continue sharing when at least two remain. */
+	leaveGroup(pdfPath: string): boolean {
 		const p = normalizePath(pdfPath);
-		const group = this.pairs[p];
-		if (!group) return;
-		for (const k of Object.keys(this.pairs)) if (this.pairs[k] === group) delete this.pairs[k];
+		const members = detachDeletedFile({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, p);
+		if (members.length === 0) return false;
+		this.clearHistory();
+		this.prunePairRevisions();
+		this.refreshSharedRevisions();
 		this.save();
 		this.notify();
+		return true;
+	}
+
+	/** Removes stale navigation on delete while keeping recoverable note snapshots. */
+	detachFile(pdfPath: string): boolean {
+		const p = normalizePath(pdfPath);
+		const members = detachDeletedFile({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, p);
+		if (members.length === 0) return false;
+		this.clearHistory();
+		this.prunePairRevisions();
+		this.refreshSharedRevisions();
+		this.save();
+		this.notify();
+		return true;
+	}
+
+	/** Clears relationships whose member path no longer exists in the vault. */
+	detachMissingFiles(existingPaths: ReadonlySet<string>): number {
+		const missing = Object.entries(this.pairs)
+			.filter(([member]) => !existingPaths.has(member))
+			.map(([member]) => member);
+		let detachedMembers = 0;
+		for (const path of missing) {
+			const members = detachDeletedFile(
+				{ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes },
+				path
+			);
+			if (members.length > 0) detachedMembers++;
+		}
+		if (detachedMembers === 0) return 0;
+		this.clearHistory();
+		this.prunePairRevisions();
+		this.refreshSharedRevisions();
+		this.save();
+		this.notify();
+		return detachedMembers;
+	}
+
+	/**
+	 * Revision changes only mean "recheck the layout". They are not proof that
+	 * page coordinates changed: sync clients commonly rewrite an identical PDF
+	 * or touch its mtime.
+	 */
+	changedSharedMembers(): string[] {
+		const changed: string[] = [];
+		for (const group of [...new Set(Object.values(this.pairs))]) {
+			if ((this.pairModes[group] ?? "shared") !== "shared") continue;
+			const members = Object.keys(this.pairs).filter((path) => this.pairs[path] === group);
+			const recorded = this.pairRevisions[group];
+			for (const path of members) {
+				const current = this.fileRevision(path);
+				const previous = recorded?.[path];
+				if (!current || !previous || current.mtime !== previous.mtime || current.size !== previous.size) {
+					changed.push(path);
+				}
+			}
+		}
+		return changed;
+	}
+
+	/** Record one member only after its current page layout has been verified. */
+	acceptCurrentRevision(pdfPath: string): boolean {
+		const path = normalizePath(pdfPath);
+		const group = this.pairs[path];
+		if (!group || (this.pairModes[group] ?? "shared") !== "shared") return false;
+		const revision = this.fileRevision(path);
+		if (!revision) return false;
+		this.pairRevisions[group] ??= {};
+		this.pairRevisions[group][path] = revision;
+		this.save();
+		return true;
+	}
+
+	private fileRevision(path: string): FileRevision | null {
+		const file = this.app.vault.getAbstractFileByPath(path);
+		return file instanceof TFile ? { mtime: file.stat.mtime, size: file.stat.size } : null;
+	}
+
+	private captureGroupRevisions(group: string): void {
+		const revisions: Record<string, FileRevision> = {};
+		for (const [member, memberGroup] of Object.entries(this.pairs)) {
+			if (memberGroup !== group) continue;
+			const revision = this.fileRevision(member);
+			if (revision) revisions[member] = revision;
+		}
+		this.pairRevisions[group] = revisions;
+	}
+
+	private refreshSharedRevisions(): void {
+		for (const group of new Set(Object.values(this.pairs))) {
+			if ((this.pairModes[group] ?? "shared") === "shared") this.captureGroupRevisions(group);
+		}
+	}
+
+	private prunePairRevisions(): void {
+		for (const group of Object.keys(this.pairRevisions)) {
+			if (!Object.values(this.pairs).includes(group) || (this.pairModes[group] ?? "shared") !== "shared") {
+				delete this.pairRevisions[group];
+			}
+		}
 	}
 
 	/**
@@ -284,11 +543,11 @@ export class PdfAnnotationStore {
 	 * what makes the stored state genuinely the previous one.
 	 */
 	forPage(pdfPath: string, page: number): PdfAnnotation[] {
-		return (this.data[this.key(pdfPath)] ?? []).filter((a) => a.page === page).map((a) => ({ ...a }));
+		return (this.data[this.key(pdfPath)] ?? []).filter((a) => a.page === page).map(cloneAnnotation);
 	}
 
 	forFile(pdfPath: string): PdfAnnotation[] {
-		return (this.data[this.key(pdfPath)] ?? []).map((a) => ({ ...a }));
+		return (this.data[this.key(pdfPath)] ?? []).map(cloneAnnotation);
 	}
 
 	/**
@@ -300,7 +559,7 @@ export class PdfAnnotationStore {
 		if (recordHistory) this.pushHistory();
 		const key = this.key(pdfPath);
 		const list = (this.data[key] ??= []);
-		const stored = { ...ann };
+		const stored = cloneAnnotation(ann);
 		const idx = list.findIndex((a) => a.id === ann.id);
 		if (idx >= 0) list[idx] = stored;
 		else list.push(stored);
@@ -323,40 +582,62 @@ export class PdfAnnotationStore {
 	 * path-string keys would otherwise orphan them silently.
 	 */
 	renameFile(oldPath: string, newPath: string): void {
+		this.renamePath(oldPath, newPath, false);
+	}
+
+	/**
+	 * Obsidian emits one TFolder rename when a whole paper folder moves. Re-key
+	 * every stored child path in one pass; waiting for child TFile events loses
+	 * the relation because those events are not guaranteed to exist.
+	 */
+	renameFolder(oldPath: string, newPath: string): number {
+		return this.renamePath(oldPath, newPath, true);
+	}
+
+	private renamePath(oldPath: string, newPath: string, descendants: boolean): number {
 		const from = normalizePath(oldPath);
 		const to = normalizePath(newPath);
-		if (from === to) return;
-		let touched = false;
+		if (from === to) return 0;
+		const remap = (path: string): string => {
+			if (path === from) return to;
+			return descendants && path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path;
+		};
+		const changed = new Set<string>();
 
-		if (this.fingerprints[from]) {
-			this.fingerprints[to] = this.fingerprints[from];
-			delete this.fingerprints[from];
-			touched = true;
+		const nextPairs: Record<string, string> = {};
+		for (const [member, group] of Object.entries(this.pairs)) {
+			const nextMember = remap(member);
+			const nextGroup = remap(group);
+			if (nextMember !== member) changed.add(member);
+			if (nextGroup !== group) changed.add(group);
+			nextPairs[nextMember] = nextGroup;
 		}
 
-		// Pairing survives a rename on either side: re-key the membership, and if
-		// the renamed file was the group's canonical name, re-point every member.
-		if (this.pairs[from]) {
-			const group = this.pairs[from];
-			this.pairs[to] = group === from ? to : group;
-			delete this.pairs[from];
-			touched = true;
-		}
-		for (const k of Object.keys(this.pairs)) {
-			if (this.pairs[k] === from) {
-				this.pairs[k] = to;
-				touched = true;
-			}
+		const nextModes: Record<string, PairMode> = {};
+		for (const [group, mode] of Object.entries(this.pairModes)) {
+			const nextGroup = remap(group);
+			if (nextGroup !== group) changed.add(group);
+			nextModes[nextGroup] = mode;
 		}
 
-		if (this.data[from]) {
-			this.data[to] = [...(this.data[to] ?? []), ...this.data[from]];
-			delete this.data[from];
-			touched = true;
+		const nextData: Record<string, PdfAnnotation[]> = {};
+		for (const [key, list] of Object.entries(this.data)) {
+			const nextKey = remap(key);
+			if (nextKey !== key) changed.add(key);
+			nextData[nextKey] = mergeAnnotationLists(nextData[nextKey], list);
 		}
 
-		if (!touched) return;
+		if (changed.size === 0) return 0;
+		this.pairs = nextPairs;
+		this.pairModes = nextModes;
+		this.data = nextData;
+		// Revisions contain exact member paths. Rebuild them from Obsidian's new
+		// file objects instead of trying to patch several nested maps independently.
+		this.pairRevisions = {};
+		this.prunePairRevisions();
+		this.refreshSharedRevisions();
 		this.save();
 		this.notify();
+		return changed.size;
 	}
 }
