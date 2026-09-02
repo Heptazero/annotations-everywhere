@@ -4,6 +4,7 @@ import {
 	normalizeAnnotationLayers,
 	type AnnotationLayerDefinition,
 } from "./annotation-layers";
+import { DEFAULT_ANNOTATION_PROPERTY, normalizeAnnotationPropertyName } from "./source-annotation-sync";
 
 export interface AnnotationColorSlot {
 	/** Stable storage key. Names and colour values may change without touching notes. */
@@ -25,6 +26,10 @@ export interface PdfAnnotationSettings {
 	 * `/.obsidian/plugins/` wholesale.
 	 */
 	dataPath: string;
+	/** Mirror whether a source-linked PDF has annotations into its Markdown note. */
+	syncAnnotationProperty: boolean;
+	/** Boolean frontmatter key written only as true; absence means no annotations. */
+	annotationPropertyName: string;
 	/** Dot + border colour for free notes. */
 	freeColor: string;
 	/** Dot + border colour for rail notes. */
@@ -135,6 +140,8 @@ export const DEFAULT_COLOR_SLOTS: AnnotationColorSlot[] = [
 
 export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	dataPath: ".margin-notes-hz",
+	syncAnnotationProperty: false,
+	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
 	freeColor: "#7d94ca",
 	railColor: "#eed37c",
 	opacity: 92,
@@ -177,6 +184,8 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 	return {
 		...DEFAULT_PDF_ANNOTATION_SETTINGS,
 		...raw,
+		syncAnnotationProperty: raw.syncAnnotationProperty === true,
+		annotationPropertyName: normalizeAnnotationPropertyName(raw.annotationPropertyName),
 		railWidthLeft: raw.railWidthLeft ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthLeft,
 		railWidthRight: raw.railWidthRight ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthRight,
 		railGapLeft: raw.railGapLeft ?? legacyGap ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railGapLeft,

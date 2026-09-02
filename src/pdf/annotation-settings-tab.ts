@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, setIcon, type Plugin } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon, type Plugin } from "obsidian";
 import {
 	DEFAULT_PDF_ANNOTATION_SETTINGS,
 	HIGHLIGHT_MODE_LABELS,
@@ -10,6 +10,8 @@ import { makeAnnotationLayerId } from "./annotation-layers";
 import { resolveDataFilePath } from "./annotation-store";
 import type { PdfAnnotationsController } from "./controller";
 import { LayerDeleteModal } from "./layer-delete-modal";
+import { AnnotationPropertySyncModal } from "./annotation-property-sync-modal";
+import { normalizeAnnotationPropertyName } from "./source-annotation-sync";
 
 export class PdfAnnotationSettingTab extends PluginSettingTab {
 	constructor(
@@ -53,6 +55,82 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 			);
 		const resolved = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
 		resolved.setText(`实际文件:${this.controller.store.filePath}`);
+
+		const previewSync = (enableAfterConfirm: boolean): void => {
+			const property = normalizeAnnotationPropertyName(settings.annotationPropertyName);
+			settings.annotationPropertyName = property;
+			const changes = this.controller.annotationPropertySync.plan(property);
+			const finishEnable = async (): Promise<void> => {
+				if (!enableAfterConfirm) return;
+				settings.syncAnnotationProperty = true;
+				await this.controller.saveSettings(settings);
+				this.display();
+			};
+
+			if (changes.length === 0) {
+				void finishEnable();
+				new Notice("批注属性已经同步，没有笔记需要修改");
+				return;
+			}
+
+			new AnnotationPropertySyncModal(
+				this.app,
+				changes,
+				async (confirmed) => {
+					if (enableAfterConfirm) {
+						settings.syncAnnotationProperty = true;
+						await this.controller.saveSettings(settings);
+					}
+					return this.controller.annotationPropertySync.apply(confirmed);
+				},
+				(result) => {
+					new Notice(`已同步 ${result.updated} 篇笔记${result.skipped > 0 ? `，跳过 ${result.skipped} 篇已变化的笔记` : ""}`);
+					this.display();
+				}
+			).open();
+		};
+
+		new Setting(containerEl)
+			.setName("同步批注状态到 source 笔记")
+			.setDesc("只按 Markdown 的 source 双链查找 PDF。有批注时写入 true；最后一条批注删除后移除属性。首次开启会先预览全部改动。")
+			.addToggle((toggle) => {
+				toggle.setValue(settings.syncAnnotationProperty).onChange(async (value) => {
+					if (!value) {
+						settings.syncAnnotationProperty = false;
+						await this.controller.saveSettings(settings);
+						this.display();
+						return;
+					}
+					toggle.setValue(false);
+					previewSync(true);
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("批注属性名")
+			.setDesc(settings.syncAnnotationProperty ? "关闭自动同步后才能修改属性名。" : "布尔属性；默认 has_annotations。")
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_PDF_ANNOTATION_SETTINGS.annotationPropertyName)
+					.setValue(settings.annotationPropertyName)
+					.setDisabled(settings.syncAnnotationProperty)
+					.onChange((value) => {
+						const next = value.trim();
+						if (!next || settings.syncAnnotationProperty) return;
+						if (normalizeAnnotationPropertyName(next) !== next) {
+							new Notice("这个属性名无效；source 是资源关系字段，不能覆盖");
+							return;
+						}
+						settings.annotationPropertyName = next;
+						commit();
+					})
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("预览并同步")
+					.setDisabled(!settings.syncAnnotationProperty)
+					.onClick(() => previewSync(false))
+			);
 
 		const layerHeader = new Setting(containerEl)
 			.setName("批注图层")

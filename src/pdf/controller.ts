@@ -24,6 +24,7 @@ import { getActivePDFView, onPageReady, onScaleChanging, onTextLayerReady, type 
 import { outlineHasDestination, PdfOutlineReader, type PdfOutlineItem } from "./pdf-outline";
 import { sortAnnotationsForReading } from "./reading-order";
 import { SharedFileLifecycle } from "./shared-file-lifecycle";
+import { SourceAnnotationSync } from "./source-annotation-sync";
 import type { PDFPageView } from "./pdfjs-types";
 import { attachRectSelectListener, type RectSelectController } from "./rect-select";
 import { findScrollAncestor } from "./scroll-container";
@@ -55,6 +56,7 @@ interface ViewState {
  */
 export class PdfAnnotationsController {
 	readonly store: PdfAnnotationStore;
+	readonly annotationPropertySync: SourceAnnotationSync;
 	settings: PdfAnnotationSettings = DEFAULT_PDF_ANNOTATION_SETTINGS;
 
 	private rectSelect: RectSelectController = { armed: false };
@@ -81,6 +83,7 @@ export class PdfAnnotationsController {
 		private app: App
 	) {
 		this.store = new PdfAnnotationStore(app, plugin);
+		this.annotationPropertySync = new SourceAnnotationSync(app, this.store, () => this.settings);
 		this.outlineReader = new PdfOutlineReader(app);
 		this.fileLifecycle = new SharedFileLifecycle({
 			app,
@@ -121,13 +124,21 @@ export class PdfAnnotationsController {
 		// but left the note sitting on the PDF until the next page render.
 		// (Layer rebuilds are debounced and skip while a note is being dragged or
 		// edited, so the extra churn from in-layer edits is harmless.)
-		this.plugin.register(this.store.onChange(() => this.rebuildAll()));
+		this.plugin.register(this.store.onChange(() => {
+			this.rebuildAll();
+			this.annotationPropertySync.queue();
+		}));
+		this.plugin.registerEvent(this.app.metadataCache.on("changed", (file) => {
+			if (file.extension === "md") this.annotationPropertySync.queue();
+		}));
+		this.plugin.register(() => this.annotationPropertySync.dispose());
 		this.fileLifecycle.register();
 
 		this.app.workspace.onLayoutReady(() => {
 			this.scanPDFViews();
 			void this.recheckChangedSharedFiles();
 			this.fileLifecycle.onLayoutReady();
+			this.annotationPropertySync.queue();
 		});
 		this.plugin.register(() => {
 			for (const timer of this.layoutRecheckTimers.values()) window.clearTimeout(timer);

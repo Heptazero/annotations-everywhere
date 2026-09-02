@@ -1,6 +1,18 @@
 继续做 Obsidian 插件 `margin-notes-hz`(原名 `margin-notes`,已改名,见下方"事故记录"),路径:
 `/Users/heptazero/Documents/my-obsidian/.obsidian/plugins/margin-notes-hz/`
 
+## v0.46.0 —— 将 PDF 批注状态同步到 source 笔记
+
+- 设置新增「同步批注状态到 source 笔记」和可配置的布尔属性名，默认
+  `has_annotations`。只解析 Markdown frontmatter 的 `source` 双链，不按文件名、目录或
+  普通反链猜关系；`source` 本身禁止作为写入目标。
+- 任一 source PDF 的共享批注计数大于 0 时写 `true`；最后一条批注删除后移除该属性，不写
+  `false`。共享组成员走同一批注桶，所以笔记只链接英文 PDF 也能识别中英文共用的批注。
+- 首次启用先列出所有待改笔记，取消零写入；确认后才开启自动同步。预览后内容或批注状态
+  发生变化的笔记会跳过，不按旧预览强写。设置里可再次手动预览同步。
+- 非布尔的同名属性视为用户数据，自动同步不覆盖。同步只改指定属性，保留其他 frontmatter
+  和正文。
+
 ## v0.45.2 —— 批注编辑时方向键不再触发 PDF 导航
 
 - PDF 批注统一使用 textarea 编辑，原本已在目标元素的 `keydown` 冒泡阶段调用

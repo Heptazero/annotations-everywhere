@@ -5,6 +5,7 @@ import "./reading-order.test";
 import "./markdown-margin.test";
 import "./pdf-layout.test";
 import "./editor-key-scope.test";
+import "./source-annotation-sync.test";
 import { TFile } from "obsidian";
 import { PdfAnnotationStore } from "../src/pdf/annotation-store";
 import { compatibleRecoverySources } from "../src/pdf/annotation-recovery";
