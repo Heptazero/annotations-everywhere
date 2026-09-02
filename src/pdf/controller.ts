@@ -4,6 +4,8 @@ import { anchorFromActiveSelection } from "./annotation-anchor";
 import { AnnotationLayer } from "./annotation-layer";
 import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./annotation-layer-menus";
 import { AnnotationLayerPicker } from "./annotation-layer-picker";
+import { compatibleRecoverySources, type OrphanedAnnotationSource } from "./annotation-recovery";
+import { AnnotationRecoveryPicker } from "./annotation-recovery-picker";
 import {
 	applyPdfAnnotationStyleSettings,
 	clearPdfAnnotationStyleSettings,
@@ -313,6 +315,74 @@ export class PdfAnnotationsController {
 	canLeaveSharedGroup(): boolean {
 		const file = this.currentPdfTarget();
 		return !!file && this.store.isPaired(file.path);
+	}
+
+	/**
+	 * Recovers annotations left under a vanished path after the user reorganised
+	 * or restored a PDF outside Obsidian. Page numbers rule out impossible
+	 * sources; filename resemblance only ranks the manual choices.
+	 */
+	async chooseOrphanedAnnotationRecovery(): Promise<void> {
+		const file = this.currentPdfTarget();
+		if (!file) return;
+		const checking = new Notice("正在读取当前 PDF 页数…", 0);
+		const layout = await readPdfLayout(this.app, file);
+		checking.hide();
+		if (!layout) {
+			new Notice("无法读取当前 PDF 的页面结构，暂不能筛选旧批注");
+			return;
+		}
+
+		const existingPaths = new Set(
+			this.app.vault
+				.getFiles()
+				.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
+				.map((candidate) => candidate.path)
+		);
+		const all = this.store.orphanedAnnotationSources(existingPaths);
+		const candidates = compatibleRecoverySources(file.path, layout.length, all);
+		if (candidates.length === 0) {
+			new Notice(
+				all.length === 0
+					? "没有未挂载的批注记录"
+					: `没有页码兼容的旧批注记录（当前 PDF 共 ${layout.length} 页）`
+			);
+			return;
+		}
+
+		new AnnotationRecoveryPicker(this.app, candidates, layout.length, (source) =>
+			this.applyOrphanedAnnotationRecovery(file.path, source)
+		).open();
+	}
+
+	private applyOrphanedAnnotationRecovery(targetPath: string, source: OrphanedAnnotationSource): void {
+		if (!isPdf(this.app.vault.getAbstractFileByPath(targetPath))) {
+			new Notice("当前 PDF 已移动或删除，请重新打开后再恢复批注");
+			return;
+		}
+		if (this.app.vault.getAbstractFileByPath(source.path)) {
+			new Notice("旧路径已经重新出现，未移动其批注");
+			return;
+		}
+		const recovered = this.store.recoverOrphanedAnnotations(source.path, targetPath);
+		if (!recovered) {
+			new Notice("这份旧批注已经被恢复或重新关联");
+			return;
+		}
+
+		const split = this.settings.doubleColumnSplits[source.path];
+		if (split !== undefined) {
+			const next = { ...this.settings.doubleColumnSplits };
+			delete next[source.path];
+			if (next[targetPath] === undefined) next[targetPath] = split;
+			this.patchSettings({ doubleColumnSplits: next });
+		}
+		const merged = recovered.previousTargetCount > 0;
+		new Notice(
+			merged
+				? `已合并恢复 ${recovered.sourceCount} 条旧批注；当前共有 ${recovered.resultCount} 条`
+				: `已恢复 ${recovered.resultCount} 条批注到当前 PDF`
+		);
 	}
 
 	/**

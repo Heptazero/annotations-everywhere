@@ -36,7 +36,29 @@ export class FileView {
 	viewer?: unknown;
 }
 
-export class App {}
+export class Scope {
+	handlers: Array<{ modifiers: unknown; key: string | null; func: (event: KeyboardEvent, context: unknown) => unknown }> = [];
+
+	constructor(public parent?: Scope) {}
+
+	register(modifiers: unknown, key: string | null, func: (event: KeyboardEvent, context: unknown) => unknown) {
+		const handler = { modifiers, key, func };
+		this.handlers.push(handler);
+		return handler;
+	}
+}
+
+export class App {
+	scope = new Scope();
+	keymap = {
+		stack: [] as Scope[],
+		pushScope: (scope: Scope) => void this.keymap.stack.push(scope),
+		popScope: (scope: Scope) => {
+			const index = this.keymap.stack.lastIndexOf(scope);
+			if (index >= 0) this.keymap.stack.splice(index, 1);
+		},
+	};
+}
 
 export function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\.\//, "");

@@ -1,6 +1,22 @@
 继续做 Obsidian 插件 `margin-notes-hz`(原名 `margin-notes`,已改名,见下方"事故记录"),路径:
 `/Users/heptazero/Documents/my-obsidian/.obsidian/plugins/margin-notes-hz/`
 
+## v0.45.2 —— 批注编辑时方向键不再触发 PDF 导航
+
+- PDF 批注统一使用 textarea 编辑，原本已在目标元素的 `keydown` 冒泡阶段调用
+  `stopPropagation()`；但 Obsidian 全局 Keymap 会更早处理方向键，因此左右键仍可能被
+  PDF 阅读器当成翻页/导航。
+- 新增 `editor-key-scope.ts`。进入批注编辑时压入短生命周期 Obsidian `Scope`，接管
+  Left/Right/Up/Down、Home/End、PageUp/PageDown；处理器不调用 `preventDefault`，所以
+  浏览器原生光标移动与 Shift 选择仍保留。blur、保存或取消后立即释放 Scope。
+- textarea 同时隔离 `keyup`，兼容监听阶段不同的 pdf.js 版本。新增 5 项回归断言，覆盖
+  导航键注册、事件隔离、不阻止默认光标行为和幂等清理。
+- 新增命令 `[PDF] 恢复未挂载批注到当前 PDF`。它只列出原 PDF 路径已经不存在的私有批注
+  桶，先排除“最高批注页超过当前 PDF 总页数”的不可能候选，再按文件名相似度和页面覆盖
+  排序，由用户明确选择后无损合并到当前 PDF；已有批注不覆盖，同 ID 的不同版本分别保留。
+- 恢复命令同时迁移该旧路径的双栏阅读设置。页码只能排除错误候选，不能证明 PDF 身份，
+  所以不会只凭页数自动挂载。
+
 ## v0.45.1 —— 左侧自由批注不再被夹到窗格边界
 
 - 读取实际 `annotations.json` 后确认，用户报告的左侧框不是 `side: left` 的固定轨道，

@@ -124,6 +124,15 @@ export default class MarginNotesPlugin extends Plugin {
 				return active;
 			},
 		});
+		this.addCommand({
+			id: "pdf-recover-orphaned-annotations",
+			name: "[PDF] 恢复未挂载批注到当前 PDF",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) void this.pdfAnnotations.chooseOrphanedAnnotationRecovery();
+				return active;
+			},
+		});
 
 		this.registerView(ANNOTATION_LIST_VIEW, (leaf) => new AnnotationListView(leaf, this.pdfAnnotations));
 		this.addCommand({

@@ -1,4 +1,5 @@
 import { MarkdownRenderer, loadMathJax, setIcon, type App, type Component } from "obsidian";
+import { beginTextEditorNavigationScope } from "./editor-key-scope";
 
 const EDITING_CLASS = "is-editing";
 
@@ -73,6 +74,7 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 	bodyEl.dataset.placeholder = opts.placeholder ?? "写点什么…";
 	bodyEl.spellcheck = false;
 	let editorEl: HTMLTextAreaElement | null = null;
+	let releaseNavigationScope: (() => void) | null = null;
 
 	const render = async (): Promise<void> => {
 		bodyEl.empty();
@@ -101,6 +103,7 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 		editorEl = editor;
 		editor.value = el.dataset.source ?? "";
 		editor.spellcheck = false;
+		releaseNavigationScope = beginTextEditorNavigationScope(opts.app);
 		const resize = () => {
 			editor.style.height = "0px";
 			editor.style.height = `${Math.max(48, editor.scrollHeight)}px`;
@@ -117,6 +120,9 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 				finishEdit(true);
 			}
 		});
+		// pdf.js variants may also listen on keyup. It has no role in textarea
+		// editing, so keep that phase inside the editor as well.
+		editor.addEventListener("keyup", (event) => event.stopPropagation());
 		resize();
 		editor.focus();
 		editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -125,6 +131,8 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 	const finishEdit = (save: boolean): void => {
 		const editor = editorEl;
 		if (!editor) return;
+		releaseNavigationScope?.();
+		releaseNavigationScope = null;
 		const previous = el.dataset.source ?? "";
 		const newText = save ? editor.value.replace(/\r\n/g, "\n") : previous;
 		editorEl = null;

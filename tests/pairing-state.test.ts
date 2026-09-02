@@ -4,8 +4,10 @@ import "./annotation-layers.test";
 import "./reading-order.test";
 import "./markdown-margin.test";
 import "./pdf-layout.test";
+import "./editor-key-scope.test";
 import { TFile } from "obsidian";
 import { PdfAnnotationStore } from "../src/pdf/annotation-store";
+import { compatibleRecoverySources } from "../src/pdf/annotation-recovery";
 import { filterAnnotations, parseAnnotationSearch } from "../src/pdf/annotation-search";
 import { comparePageLayouts, largestCompatibleLayoutCluster } from "../src/pdf/layout-check";
 import { adaptiveLeaderEndpoints, leaderVisible } from "../src/pdf/leader-geometry";
@@ -231,6 +233,47 @@ function storeHarness(payload: unknown, files: TFile[]) {
 	const app = { vault: { adapter, getAbstractFileByPath: (path: string) => byPath.get(path) ?? null } };
 	const plugin = { loadData: async () => null };
 	return { store: new PdfAnnotationStore(app as never, plugin as never), disk };
+}
+
+// Recovery only offers vanished private buckets whose page numbers fit the
+// current PDF, and filename resemblance ranks rather than hides candidates.
+{
+	const target = "research/1985-paper/1985-Storing-Infinite-Numbers.pdf";
+	const sources = [
+		{ path: "old/cn_1985-Storing-Infinite-Numbers.pdf", count: 35, maxPage: 4 },
+		{ path: "old/unrelated.pdf", count: 2, maxPage: 3 },
+		{ path: "old/too-long.pdf", count: 1, maxPage: 5 },
+	];
+	const compatible = compatibleRecoverySources(target, 4, sources);
+	assert.deepEqual(compatible.map((source) => source.path), [sources[0].path, sources[1].path]);
+}
+
+// Explicit recovery moves the old bucket, preserves existing target notes and
+// leaves exact duplicates collapsed.
+{
+	const live = new TFile("new/paper.pdf", 10, 100);
+	const h = storeHarness(
+		{
+			version: 9,
+			pdfAnnotations: {
+				"old/paper.pdf": [annotation("old"), annotation("same")],
+				"new/paper.pdf": [annotation("current"), annotation("same")],
+				"live/other.pdf": [annotation("mounted")],
+			},
+			pairs: {},
+			pairModes: {},
+			pairRevisions: {},
+		},
+		[live, new TFile("live/other.pdf")]
+	);
+	await h.store.load("annotations.json");
+	const orphaned = h.store.orphanedAnnotationSources(new Set([live.path, "live/other.pdf"]));
+	assert.deepEqual(orphaned.map((source) => source.path), ["old/paper.pdf"]);
+	assert.equal(orphaned[0].maxPage, 1);
+	const recovered = h.store.recoverOrphanedAnnotations("old/paper.pdf", live.path);
+	assert.deepEqual(recovered, { sourceCount: 2, previousTargetCount: 2, resultCount: 3 });
+	assert.deepEqual(h.store.forFile(live.path).map((item) => item.id), ["current", "same", "old"]);
+	assert.equal(h.store.annotationCount("old/paper.pdf"), 0);
 }
 
 // Pre-v5 unverified shared data becomes independent copies in v6.

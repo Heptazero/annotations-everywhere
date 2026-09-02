@@ -19,6 +19,7 @@ import {
 	type PairMode,
 	type SharedStrategy,
 } from "./pairing-state";
+import type { OrphanedAnnotationSource } from "./annotation-recovery";
 
 interface FileShape {
 	version: number;
@@ -310,6 +311,53 @@ export class PdfAnnotationStore {
 
 	annotationCount(pdfPath: string): number {
 		return this.forFile(pdfPath).length;
+	}
+
+	/**
+	 * Lists non-empty private buckets whose PDF path no longer exists. Buckets
+	 * still participating in a relationship are excluded: moving those behind
+	 * the relationship's back would make its surviving members read stale data.
+	 */
+	orphanedAnnotationSources(existingPaths: ReadonlySet<string>): OrphanedAnnotationSource[] {
+		const existing = new Set([...existingPaths].map((path) => normalizePath(path)));
+		const relationshipPaths = new Set([...Object.keys(this.pairs), ...Object.values(this.pairs)]);
+		return Object.entries(this.data).flatMap(([path, list]) => {
+			if (list.length === 0 || existing.has(path) || relationshipPaths.has(path)) return [];
+			return [{
+				path,
+				count: list.length,
+				maxPage: list.reduce((max, annotation) => Math.max(max, annotation.page), 0),
+			}];
+		});
+	}
+
+	/**
+	 * Moves one explicitly chosen orphan bucket onto a live PDF. Existing target
+	 * notes are merged losslessly; exact duplicates collapse, while divergent
+	 * records sharing an id are retained under deterministic suffixed ids.
+	 */
+	recoverOrphanedAnnotations(
+		sourcePath: string,
+		targetPath: string
+	): { sourceCount: number; previousTargetCount: number; resultCount: number } | null {
+		const source = normalizePath(sourcePath);
+		const target = normalizePath(targetPath);
+		if (source === target || source in this.pairs || Object.values(this.pairs).includes(source)) return null;
+		const sourceList = this.data[source];
+		if (!sourceList || sourceList.length === 0) return null;
+
+		const targetKey = this.key(target);
+		const targetList = this.data[targetKey] ?? [];
+		this.pushHistory();
+		this.data[targetKey] = mergeAnnotationLists(targetList, sourceList).map(cloneAnnotation);
+		delete this.data[source];
+		this.save();
+		this.notify();
+		return {
+			sourceCount: sourceList.length,
+			previousTargetCount: targetList.length,
+			resultCount: this.data[targetKey].length,
+		};
 	}
 
 	/**
