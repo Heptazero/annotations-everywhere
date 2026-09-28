@@ -1,11 +1,14 @@
-import { ItemView, setIcon, type WorkspaceLeaf } from "obsidian";
-import { buildAnnotationBox } from "./annotation-box";
+import { ItemView, Menu, setIcon, type WorkspaceLeaf } from "obsidian";
+import { buildAnnotationBox, type AnnotationBoxHandle } from "./annotation-box";
 import { annotationVisibleInLayer } from "./annotation-layers";
 import { filterAnnotations } from "./annotation-search";
 import { annotationColorOrder, colorSlot, resolveAnnotationColor } from "./annotation-settings";
 import type { PdfAnnotation } from "./annotation-types";
 import type { PdfAnnotationsController } from "./controller";
 import type { PdfOutlineItem } from "./pdf-outline";
+import { groupAnnotationsByOutline, type OutlineAnnotationGroups } from "./manual-outline";
+import { DeleteManualOutlineModal } from "./manual-outline-modal";
+import { openSwatchPicker } from "./swatch-picker";
 
 export const ANNOTATION_LIST_VIEW = "margin-notes-hz-annotation-list";
 
@@ -235,28 +238,39 @@ export class AnnotationListView extends ItemView {
 		void this.controller.sharedOutline(pdfPath).then((result) => {
 			if (generation !== this.renderGeneration || this.panelMode !== "outline" || this.renderedPath !== pdfPath) return;
 			loading.remove();
+			const source = host.createDiv("margin-notes-pdf-outline-source");
+			setIcon(source.createSpan({ cls: "margin-notes-pdf-outline-source-icon" }), "book-open");
+			const sourceName = result.sourcePath?.split("/").pop() ?? "";
+			source.createSpan({
+				cls: "margin-notes-pdf-outline-source-name",
+				text: result.hasManual
+					? result.sourcePath === pdfPath ? "大纲 · 含手动标题" : `共享大纲 · ${sourceName} · 含手动标题`
+					: result.sourcePath === pdfPath ? "当前 PDF 大纲" : result.sourcePath ? `共享大纲 · ${sourceName}` : "章节与批注",
+			});
+			const add = source.createEl("button", {
+				cls: "margin-notes-pdf-outline-add clickable-icon",
+				attr: { "aria-label": "添加手动大纲标题", title: "添加手动大纲标题" },
+			});
+			setIcon(add, "plus");
+			add.addEventListener("click", () => this.controller.openManualOutlineEditor(pdfPath));
+			const anns = this.controller.sortAnnotations(pdfPath, this.controller.store.forFile(pdfPath));
 			if (!result.sourcePath || result.items.length === 0) {
 				host.createDiv({
 					cls: "margin-notes-pdf-list-empty",
 					text: result.error
 						? "读取 PDF 大纲失败"
 						: this.controller.sharedMembersOfActive().length > 1
-							? "共享组中没有可用大纲"
-							: "这份 PDF 没有大纲；加入共享组后可继承其他 PDF 的大纲",
+							? "共享组中没有大纲；可点击 + 添加手动标题"
+							: "这份 PDF 没有大纲；可点击 + 添加手动标题",
 				});
+				if (anns.length > 0) this.renderOutlineUngrouped(host, pdfPath, anns, "尚未归入章节的批注");
 				this.restoreUi(restoreScroll, generation);
 				return;
 			}
-
-			const sourceName = result.sourcePath.split("/").pop() ?? result.sourcePath;
-			const source = host.createDiv("margin-notes-pdf-outline-source");
-			setIcon(source.createSpan({ cls: "margin-notes-pdf-outline-source-icon" }), "book-open");
-			source.createSpan({
-				cls: "margin-notes-pdf-outline-source-name",
-				text: result.sourcePath === pdfPath ? "当前 PDF 大纲" : `共享大纲 · ${sourceName}`,
-			});
+			const groups = groupAnnotationsByOutline(result.items, anns);
+			if (groups.beforeFirst.length > 0) this.renderOutlineUngrouped(host, pdfPath, groups.beforeFirst, "大纲起点之前");
 			const tree = host.createDiv({ cls: "margin-notes-pdf-outline-tree", attr: { role: "tree" } });
-			this.renderOutlineItems(tree, pdfPath, result.sourcePath, result.items, 0, "");
+			this.renderOutlineItems(tree, pdfPath, result.sourcePath, result.items, groups, 0, "");
 			this.restoreUi(restoreScroll, generation);
 		}).catch(() => {
 			if (generation !== this.renderGeneration || !loading.isConnected) return;
@@ -264,18 +278,26 @@ export class AnnotationListView extends ItemView {
 		});
 	}
 
+	private renderOutlineUngrouped(parent: HTMLElement, pdfPath: string, anns: PdfAnnotation[], title: string): void {
+		const group = parent.createDiv("margin-notes-pdf-outline-annotations");
+		group.createDiv({ cls: "margin-notes-pdf-outline-annotation-label", text: `${title} · ${anns.length}` });
+		for (const ann of anns) this.renderRow(group, pdfPath, ann, true);
+	}
+
 	private renderOutlineItems(
 		parent: HTMLElement,
 		pdfPath: string,
 		sourcePath: string,
 		items: PdfOutlineItem[],
+		groups: OutlineAnnotationGroups,
 		depth: number,
 		prefix: string
 	): void {
 		items.forEach((item, index) => {
 			const trail = prefix ? `${prefix}.${index}` : String(index);
-			const key = `${sourcePath}\u0000${trail}`;
-			const hasChildren = item.items.length > 0;
+			const key = item.manualId ? `manual:${item.manualId}` : `${sourcePath}\u0000${trail}`;
+			const ownAnnotations = groups.byHeading.get(item) ?? [];
+			const hasChildren = item.items.length > 0 || ownAnnotations.length > 0;
 			const collapsed = hasChildren && this.collapsedOutlineItems.has(key);
 			const row = parent.createDiv({
 				cls: "margin-notes-pdf-outline-row",
@@ -300,7 +322,30 @@ export class AnnotationListView extends ItemView {
 				row.createSpan({ cls: "margin-notes-pdf-outline-chevron-spacer" });
 			}
 			row.createSpan({ cls: "margin-notes-pdf-outline-title", text: item.title });
-			if (item.page !== null) row.createSpan({ cls: "margin-notes-pdf-outline-page", text: String(item.page) });
+			const meta = row.createSpan({ cls: "margin-notes-pdf-outline-meta" });
+			const count = groups.counts.get(item) ?? 0;
+			if (count > 0) meta.createSpan({ cls: "margin-notes-pdf-outline-count", text: String(count) });
+			if (item.page !== null) meta.createSpan({ cls: "margin-notes-pdf-outline-page", text: String(item.page) });
+			if (item.manualId) {
+				const more = meta.createEl("button", {
+					cls: "margin-notes-pdf-outline-more clickable-icon",
+					attr: { "aria-label": `编辑或删除手动标题：${item.title}` },
+				});
+				setIcon(more, "ellipsis");
+				more.addEventListener("click", (event) => {
+					event.stopPropagation();
+					const id = item.manualId!;
+					const entry = this.controller.store.manualOutlineForFile(pdfPath).find((manual) => manual.id === id);
+					if (!entry) return;
+					const menu = new Menu();
+					menu.addItem((action) => action.setTitle("编辑标题").setIcon("pencil").onClick(() => this.controller.openManualOutlineEditor(pdfPath, entry)));
+					menu.addItem((action) => action.setTitle("删除标题").setIcon("trash").onClick(() =>
+						new DeleteManualOutlineModal(this.app, item.title, () => this.controller.removeManualOutline(pdfPath, id)).open()
+					));
+					const rect = more.getBoundingClientRect();
+					menu.showAtPosition({ x: rect.left, y: rect.bottom });
+				});
+			}
 			row.toggleClass("is-clickable", item.page !== null || hasChildren);
 			row.addEventListener("click", () => {
 				if (item.page !== null) {
@@ -314,7 +359,12 @@ export class AnnotationListView extends ItemView {
 			});
 
 			if (!collapsed && hasChildren) {
-				this.renderOutlineItems(parent, pdfPath, sourcePath, item.items, depth + 1, trail);
+				if (ownAnnotations.length > 0) {
+					const rows = parent.createDiv("margin-notes-pdf-outline-note-rows");
+					rows.style.setProperty("--margin-notes-pdf-outline-indent", `${20 + depth * 13}px`);
+					for (const ann of ownAnnotations) this.renderRow(rows, pdfPath, ann, true);
+				}
+				this.renderOutlineItems(parent, pdfPath, sourcePath, item.items, groups, depth + 1, trail);
 			}
 		});
 	}
@@ -479,6 +529,10 @@ export class AnnotationListView extends ItemView {
 	}
 
 	private renderRow(parent: HTMLElement, pdfPath: string, ann: PdfAnnotation, showPage = false): void {
+		if (ann.markOnly) {
+			this.renderMarkRow(parent, pdfPath, ann, showPage);
+			return;
+		}
 		const handle = buildAnnotationBox(parent, "margin-notes-pdf-list-row", {
 			app: this.app,
 			component: this,
@@ -518,6 +572,129 @@ export class AnnotationListView extends ItemView {
 		handle.el.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
 		handle.el.addEventListener("mouseenter", () => this.controller.peekAnnotation(ann));
 		handle.el.addEventListener("mouseleave", () => this.controller.clearPeek());
+		void handle.render();
+	}
+
+	/** A mark and its optional note remain one record, including after editing. */
+	private renderMarkRow(parent: HTMLElement, pdfPath: string, ann: PdfAnnotation, showPage: boolean): void {
+		let handle: AnnotationBoxHandle;
+		let confirmRow: HTMLDivElement | null = null;
+		const cancelDelete = () => {
+			confirmRow?.remove();
+			confirmRow = null;
+			handle.el.removeClass("is-confirming-delete");
+		};
+		const confirmDelete = () => {
+			if (confirmRow || !handle.el.isConnected) return;
+			const row = handle.el;
+			row.addClass("is-confirming-delete");
+			confirmRow = row.createDiv("margin-notes-pdf-list-mark-delete-confirm");
+			row.insertBefore(confirmRow, handle.bodyEl);
+			confirmRow.createSpan({ text: "删除整条勾画及其批注？" });
+			const cancel = confirmRow.createEl("button", { text: "取消", attr: { type: "button" } });
+			const remove = confirmRow.createEl("button", {
+				text: "删除",
+				cls: "mod-warning",
+				attr: { type: "button" },
+			});
+			cancel.addEventListener("click", (event) => {
+				event.stopPropagation();
+				cancelDelete();
+			});
+			remove.addEventListener("click", (event) => {
+				event.stopPropagation();
+				this.controller.store.remove(pdfPath, ann.id);
+			});
+			confirmRow.addEventListener("keydown", (event) => {
+				if (event.key !== "Escape") return;
+				event.preventDefault();
+				event.stopPropagation();
+				cancelDelete();
+			});
+			cancel.focus();
+		};
+		handle = buildAnnotationBox(parent, "margin-notes-pdf-list-row margin-notes-pdf-list-mark", {
+			app: this.app,
+			component: this,
+			sourcePath: pdfPath,
+			initialText: ann.text,
+			placeholder: "写点什么…",
+			onCommit: (text) => {
+				ann.text = text;
+				ann.updatedAt = Date.now();
+				this.controller.store.upsert(pdfPath, ann);
+			},
+			actions: [
+				{
+					icon: "layers",
+					title: "设置所属图层",
+					onClick: (event) =>
+						this.controller.openAnnotationLayerMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
+				},
+				{
+					icon: "arrow-up-right",
+					title: "跳转到 PDF 里的位置",
+					onClick: () => void this.controller.revealAnnotation(pdfPath, ann),
+				},
+				{
+					icon: "x",
+					title: "删除勾画及其批注",
+					cls: "margin-notes-pdf-del",
+					onClick: confirmDelete,
+				},
+			],
+		});
+		const row = handle.el;
+		row.dataset.mode = "free";
+		row.toggleClass("has-note", Boolean(ann.text));
+		row.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
+		if (showPage) {
+			const page = row.createDiv({ cls: "margin-notes-pdf-list-row-page", text: `第 ${ann.page} 页` });
+			row.insertBefore(page, handle.bodyEl);
+		}
+
+		const headline = row.createDiv("margin-notes-pdf-list-mark-head");
+		row.insertBefore(headline, handle.bodyEl);
+		const color = headline.createEl("button", {
+			cls: "margin-notes-pdf-list-mark-color",
+			attr: { "aria-label": "修改勾画颜色", title: "修改勾画颜色" },
+		});
+		color.style.backgroundColor = this.colorOf(ann);
+		color.addEventListener("click", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const rect = color.getBoundingClientRect();
+			openSwatchPicker({
+				at: { x: rect.left, y: rect.bottom },
+				swatches: this.controller.settings.palette,
+				currentKey: ann.colorKey,
+				onPick: (colorKey) => {
+					ann.colorKey = colorKey;
+					ann.updatedAt = Date.now();
+					this.controller.store.upsert(pdfPath, ann);
+				},
+			});
+		});
+		const quote = headline.createEl("button", {
+			cls: "margin-notes-pdf-list-mark-quote",
+			text: ann.quote?.trim() || "框选勾画（没有可选文字）",
+			attr: { "aria-label": "跳转到 PDF 里的勾画位置" },
+		});
+		quote.addEventListener("click", (event) => {
+			event.stopPropagation();
+			void this.controller.revealAnnotation(pdfPath, ann);
+		});
+		const edit = headline.createEl("button", {
+			cls: "margin-notes-pdf-list-mark-edit",
+			text: ann.text ? "编辑批注" : "添加批注",
+		});
+		edit.addEventListener("click", (event) => {
+			event.stopPropagation();
+			handle.enterEdit();
+		});
+
+		row.addEventListener("mouseenter", () => this.controller.peekAnnotation(ann));
+		row.addEventListener("mouseleave", () => this.controller.clearPeek());
 		void handle.render();
 	}
 }

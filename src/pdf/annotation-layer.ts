@@ -7,6 +7,8 @@ import { appendAnnotationLayerMenuItems } from "./annotation-layer-menus";
 import { annotationVisibleInLayer } from "./annotation-layers";
 import { darken, highlightsBothWays, resolveAnnotationColor, type PdfAnnotationSettings } from "./annotation-settings";
 import { adaptiveLeaderEndpoints, leaderVisible } from "./leader-geometry";
+import { isMarkClick, type MarkPointerStart } from "./mark-click";
+import { openMarkPopover, type MarkPopoverHandle } from "./mark-popover";
 import { openSwatchPicker } from "./swatch-picker";
 import type { PdfAnnotationStore } from "./annotation-store";
 import { DEFAULT_FREE_WIDTH_PCT, type MarginSide, type PdfAnnotation } from "./annotation-types";
@@ -16,6 +18,7 @@ import {
 	defaultFreeYPct,
 	freeLeft,
 	measurePageBox,
+	pdfRectInPageBox,
 	type PageBox,
 } from "./page-geometry";
 import type { PdfRect } from "./pdf-layer";
@@ -59,16 +62,19 @@ interface LeaderParts {
 }
 
 /** One rendered annotation, kept so geometry can be re-measured after rendering. */
-interface Placed {
+interface AnchoredAnnotation {
 	ann: PdfAnnotation;
 	pageView: PDFPageView;
-	el: HTMLElement;
 	/**
 	 * The anchor actually used for placement. Usually `ann.anchor`, but for a
 	 * record still waiting on a quote lookup it's a transient stand-in that is
 	 * deliberately NOT written back to `ann` — see `effectiveAnchor()`.
 	 */
 	rect: PdfRect;
+}
+
+interface Placed extends AnchoredAnnotation {
+	el: HTMLElement;
 }
 
 /**
@@ -94,16 +100,24 @@ export class AnnotationLayer {
 	private zoom: AnnotationZoomLifecycle;
 	private gestures: AnnotationGestureController;
 	/** Anchor rects in scroll coords, for `both` mode's reverse hover test. */
-	private hitAreas: { ann: PdfAnnotation; el: HTMLElement; x0: number; x1: number; y0: number; y1: number }[] = [];
+	private hitAreas: { ann: PdfAnnotation; el?: HTMLElement; x0: number; x1: number; y0: number; y1: number }[] = [];
 	private hoveredAnchorId: string | null = null;
 	/** Permanent bands ("常亮"), by annotation id — hover reuses these instead of
 	 * drawing a second one on top (two translucent layers composite to roughly
 	 * double the configured opacity, which is why 常亮 looked far darker than the
 	 * hover highlight it is supposed to match). */
-	private bands = new Map<string, HTMLElement>();
+	private bands = new Map<string, HTMLElement[]>();
 	/** Leader lines ("箭头"), by annotation id, so they can be redrawn live while
 	 * either end is being dragged rather than waiting for the debounced rebuild. */
 	private leaders = new Map<string, LeaderParts>();
+	private markPopover: MarkPopoverHandle | null = null;
+	private markPointerDown: MarkPointerStart | null = null;
+	private markClickTimer = 0;
+	private cancelPendingMarkClick = (): void => {
+		window.clearTimeout(this.markClickTimer);
+		this.markClickTimer = 0;
+		document.removeEventListener("pointerdown", this.cancelPendingMarkClick, true);
+	};
 
 	constructor(
 		private app: App,
@@ -150,6 +164,10 @@ export class AnnotationLayer {
 
 		this.scroller?.removeEventListener("mousemove", this.onScrollerMove);
 		this.scroller?.removeEventListener("contextmenu", this.onScrollerContextMenu);
+		this.scroller?.removeEventListener("pointerdown", this.onScrollerPointerDown, true);
+		this.scroller?.removeEventListener("click", this.onScrollerClick, true);
+		this.scroller?.removeEventListener("dblclick", this.onScrollerDoubleClick, true);
+		this.scroller?.removeEventListener("scroll", this.onScrollerScroll);
 		const layer = scroller.createDiv(LAYER_CLASS);
 		layer.setCssStyles({ position: "absolute", top: "0", left: "0", pointerEvents: "none" });
 		layer.toggleClass("is-zooming", this.zoom.active);
@@ -157,6 +175,10 @@ export class AnnotationLayer {
 		this.scroller = scroller;
 		scroller.addEventListener("mousemove", this.onScrollerMove);
 		scroller.addEventListener("contextmenu", this.onScrollerContextMenu);
+		scroller.addEventListener("pointerdown", this.onScrollerPointerDown, true);
+		scroller.addEventListener("click", this.onScrollerClick, true);
+		scroller.addEventListener("dblclick", this.onScrollerDoubleClick, true);
+		scroller.addEventListener("scroll", this.onScrollerScroll);
 		return layer;
 	}
 
@@ -174,6 +196,8 @@ export class AnnotationLayer {
 	 */
 	beginZoom(): void {
 		window.clearTimeout(this.rebuildTimer);
+		this.cancelPendingMarkClick();
+		this.markPopover?.requestClose();
 		this.zoom.begin();
 	}
 
@@ -184,6 +208,12 @@ export class AnnotationLayer {
 	 * off their anchors after zooming.
 	 */
 	rebuild(pdfPath: string, pages: Map<number, PDFPageView>): void {
+		if (this.last && this.last.pdfPath !== pdfPath) {
+			this.cancelPendingMarkClick();
+			if (this.markPopover?.isDirty()) new Notice("已切换 PDF，未保存的勾画批注已取消");
+			this.markPopover?.close();
+			this.hitAreas = [];
+		}
 		this.last = { pdfPath, pages };
 		if (this.isBusy()) return;
 		window.clearTimeout(this.rebuildTimer);
@@ -224,6 +254,7 @@ export class AnnotationLayer {
 		this.leaders.clear();
 
 		const built: Placed[] = [];
+		const marks: AnchoredAnnotation[] = [];
 		const pending: Promise<void>[] = [];
 
 		// Pass 1: create the DOM and kick off Markdown rendering. No geometry is
@@ -233,6 +264,10 @@ export class AnnotationLayer {
 			for (const ann of this.store.forPage(pdfPath, pageNumber)) {
 				if (!annotationVisibleInLayer(ann, this.getActiveLayerId())) continue;
 				const rect = this.effectiveAnchor(pdfPath, ann, pageView);
+				if (ann.markOnly) {
+					marks.push({ ann, pageView, rect });
+					continue;
+				}
 				if (ann.collapsed) {
 					built.push({ ann, pageView, rect, el: this.createDot(layer, pdfPath, ann, pageView) });
 					continue;
@@ -243,8 +278,10 @@ export class AnnotationLayer {
 			}
 		}
 		if (built.length === 0) {
+			layer.style.width = "";
 			if (this.scroller) {
 				this.leftSpace.apply(this.scroller, null, 0);
+				this.renderModeDecorations([], settings, this.scroller, marks);
 				this.leftSpace.commit(this.scroller);
 			}
 			this.zoom.finishIfSettled();
@@ -267,7 +304,7 @@ export class AnnotationLayer {
 		// the render wait — the second `layout()` call below would otherwise still
 		// go and reposition (fight) whatever they're mid-drag on.
 		if (gen !== this.gen || this.isBusy()) return;
-		this.layout(built, settings);
+		this.layout(built, settings, true, marks);
 		this.zoom.finishIfSettled();
 	}
 
@@ -294,7 +331,12 @@ export class AnnotationLayer {
 	 * now computed at a zoom-independent width — a note's text wraps identically
 	 * at every zoom level, so its height no longer changes at all.
 	 */
-	private layout(built: Placed[], settings: PdfAnnotationSettings, renderDecorations = true): void {
+	private layout(
+		built: Placed[],
+		settings: PdfAnnotationSettings,
+		renderDecorations = true,
+		marks: AnchoredAnnotation[] = []
+	): void {
 		const scroller = this.scroller;
 		if (!scroller) return;
 
@@ -392,7 +434,7 @@ export class AnnotationLayer {
 		// After positioning: leader lines need the notes' final boxes, and the
 		// `always` bands must not be counted in the width above (they sit over the
 		// page, never past it).
-		if (renderDecorations) this.renderModeDecorations(built, settings, scroller);
+		if (renderDecorations) this.renderModeDecorations(built, settings, scroller, marks);
 
 		const right = Math.max(maxRight, this.measuredRight(built, scroller));
 		this.layer!.style.width = right > 0 ? `${right + OUTER_MARGIN_PX}px` : "";
@@ -705,6 +747,55 @@ export class AnnotationLayer {
 
 	private openMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		const menu = new Menu();
+		if (ann.markOnly) {
+			menu.addItem((i) =>
+				i
+					.setTitle("显示在右侧轨道")
+					.setIcon("message-square")
+					.onClick(() =>
+						this.mutate(pdfPath, ann, (a) => {
+							a.markOnly = undefined;
+							a.pinned = true;
+							a.collapsed = false;
+							a.side = "right";
+						})
+					)
+			);
+			menu.addItem((i) =>
+				i
+					.setTitle("重新指定勾画位置（选中文字或拖框）")
+					.setIcon("highlighter")
+					.onClick(() => this.requestReanchor(pdfPath, ann))
+			);
+			menu.addSeparator();
+			menu.addItem((i) =>
+				i
+					.setTitle("更改颜色…")
+					.setIcon("palette")
+					.onClick(() => this.pickColor(pdfPath, ann, at))
+			);
+			if (ann.colorKey) {
+				menu.addItem((i) =>
+					i
+						.setTitle("恢复默认颜色")
+						.setIcon("rotate-ccw")
+						.onClick(() => this.mutate(pdfPath, ann, (a) => (a.colorKey = undefined)))
+				);
+			}
+			menu.addSeparator();
+			appendAnnotationLayerMenuItems(menu, this.getSettings().layers, ann, (next) =>
+				this.mutate(pdfPath, ann, (a) => (a.layerIds = next))
+			);
+			menu.addSeparator();
+			menu.addItem((i) =>
+				i
+					.setTitle("删除勾画…")
+					.setIcon("trash")
+					.onClick(() => this.openMarkActions(pdfPath, ann, at, "delete"))
+			);
+			menu.showAtPosition(at);
+			return;
+		}
 		menu.addItem((i) =>
 			i
 				.setTitle(ann.pinned ? "解除固定(随意摆放)" : "固定到侧边轨道")
@@ -847,7 +938,7 @@ export class AnnotationLayer {
 	 * rendered (e.g. hovering a list row for a page that's scrolled out of view).
 	 */
 	private hoverMark: HTMLElement | null = null;
-	private activeBand: HTMLElement | null = null;
+	private activeBands: HTMLElement[] = [];
 	private hoverPreview: HTMLElement | null = null;
 	private hoverPreviewId: string | null = null;
 
@@ -856,18 +947,18 @@ export class AnnotationLayer {
 		// A band already covering this anchor is brightened in place. Drawing a
 		// second translucent rect over the first is what made 常亮 look much
 		// darker than 悬浮 — the two layers composited instead of matching.
-		const band = this.bands.get(ann.id);
-		if (band) {
-			band.addClass("is-active");
-			this.activeBand = band;
+		const bands = this.bands.get(ann.id);
+		if (bands?.length) {
+			for (const band of bands) band.addClass("is-active");
+			this.activeBands = bands;
 			return;
 		}
 		this.hoverMark = this.drawAnchorMark(pageView, ann, "margin-notes-pdf-anchor-hover");
 	}
 
 	endHoverHighlight(): void {
-		this.activeBand?.removeClass("is-active");
-		this.activeBand = null;
+		for (const band of this.activeBands) band.removeClass("is-active");
+		this.activeBands = [];
 		this.hoverMark?.remove();
 		this.hoverMark = null;
 	}
@@ -924,6 +1015,7 @@ export class AnnotationLayer {
 	 * anywhere else on the PDF still gets Obsidian's own menu.
 	 */
 	private onScrollerContextMenu = (ev: MouseEvent): void => {
+		this.cancelPendingMarkClick();
 		const pdfPath = this.last?.pdfPath;
 		if (!pdfPath || !this.scroller || this.hitAreas.length === 0) return;
 		if ((ev.target as HTMLElement | null)?.closest(".margin-notes-pdf-note")) return;
@@ -938,6 +1030,75 @@ export class AnnotationLayer {
 		ev.stopPropagation();
 		this.openMenu(pdfPath, hit.ann, { x: ev.clientX, y: ev.clientY });
 	};
+
+	private onScrollerScroll = (): void => {
+		this.cancelPendingMarkClick();
+		this.markPopover?.requestClose();
+	};
+
+	private onScrollerPointerDown = (ev: PointerEvent): void => {
+		this.cancelPendingMarkClick();
+		this.markPointerDown = { x: ev.clientX, y: ev.clientY, button: ev.button };
+	};
+
+	private onScrollerDoubleClick = (): void => {
+		this.cancelPendingMarkClick();
+	};
+
+	/** A plain click on a mark opens its actions; dragging remains native PDF text selection. */
+	private onScrollerClick = (ev: MouseEvent): void => {
+		const down = this.markPointerDown;
+		this.markPointerDown = null;
+		if (ev.detail > 1) return;
+		if (!isMarkClick(down, { x: ev.clientX, y: ev.clientY }, window.getSelection()?.toString() ?? "")) return;
+		if ((ev.target as HTMLElement | null)?.closest(".margin-notes-pdf-note, .margin-notes-pdf-dot, .margin-notes-pdf-box")) return;
+		const pdfPath = this.last?.pdfPath;
+		const scroller = this.scroller;
+		if (!pdfPath || !scroller) return;
+		const r = scroller.getBoundingClientRect();
+		const x = ev.clientX - r.left + scroller.scrollLeft;
+		const y = ev.clientY - r.top + scroller.scrollTop;
+		const hit = this.hitAreas.find((h) => h.ann.markOnly && x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+		if (!hit) return;
+		const ann = hit.ann;
+		const at = { x: ev.clientX, y: ev.clientY };
+		// Delay until the double-click window starts to pass: an immediate dialog
+		// steals focus before pdf.js can select a word on the second click.
+		this.markClickTimer = window.setTimeout(() => {
+			this.cancelPendingMarkClick();
+			if (window.getSelection()?.toString().trim()) return;
+			if (this.last?.pdfPath !== pdfPath || !this.store.forFile(pdfPath).some((item) => item.id === ann.id)) return;
+			this.openMarkActions(pdfPath, ann, at);
+		}, 300);
+		document.addEventListener("pointerdown", this.cancelPendingMarkClick, true);
+	};
+
+	private openMarkActions(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }, initialAction?: "delete"): void {
+		this.clearHoverPreview();
+		this.endHoverHighlight();
+		this.hoveredAnchorId = null;
+		const handle = openMarkPopover({
+			app: this.app,
+			mode: "existing",
+			at,
+			swatches: this.getSettings().palette,
+			currentKey: ann.colorKey,
+			quote: ann.quote,
+			text: ann.text,
+			initialAction,
+			onPickColor: (colorKey) => this.mutate(pdfPath, ann, (a) => (a.colorKey = colorKey)),
+			onSaveText: (value) => this.mutate(pdfPath, ann, (a) => (a.text = value)),
+			onDelete: () => {
+				this.store.remove(pdfPath, ann.id);
+				this.refresh();
+			},
+			onClose: () => {
+				this.markPopover = null;
+				this.hoveredAnchorId = null;
+			},
+		});
+		if (handle) this.markPopover = handle;
+	}
 
 	/**
 	 * The colour a note and its highlight share. Per-note `color` wins; otherwise
@@ -967,19 +1128,23 @@ export class AnnotationLayer {
 		if (!rect) return null;
 
 		const box = measurePageBox(pageView, scroller, scroller.getBoundingClientRect());
-		const left = Math.min(rect[0], rect[2]);
-		const right = Math.max(rect[0], rect[2]);
-		const topPt = box.ptY1 - Math.max(rect[1], rect[3]);
-		const bottomPt = box.ptY1 - Math.min(rect[1], rect[3]);
-
-		const mark = layer.createDiv(cls);
+		const bounds = (ann.anchorRects?.length ? ann.anchorRects : [rect]).map((line) => pdfRectInPageBox(pageView, line, box));
+		const x0 = Math.min(...bounds.map((line) => line.x0));
+		const x1 = Math.max(...bounds.map((line) => line.x1));
+		const y0 = Math.min(...bounds.map((line) => line.y0));
+		const y1 = Math.max(...bounds.map((line) => line.y1));
+		const mark = layer.createDiv("margin-notes-pdf-anchor-group");
+		mark.setCssStyles({ left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
 		mark.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
-		mark.setCssStyles({
-			left: `${box.left + ((left - box.ptX0) / box.ptWidth) * box.width}px`,
-			top: `${box.top + (topPt / box.ptHeight) * box.height}px`,
-			width: `${((right - left) / box.ptWidth) * box.width}px`,
-			height: `${((bottomPt - topPt) / box.ptHeight) * box.height}px`,
-		});
+		for (const line of bounds) {
+			const band = mark.createDiv(cls);
+			band.setCssStyles({
+				left: `${line.x0 - x0}px`,
+				top: `${line.y0 - y0}px`,
+				width: `${line.x1 - line.x0}px`,
+				height: `${line.y1 - line.y0}px`,
+			});
+		}
 		return mark;
 	}
 
@@ -990,14 +1155,19 @@ export class AnnotationLayer {
 	 * hover-driven — but `both` still needs the anchor rects recorded, which is
 	 * what `hitAreas` is for.
 	 */
-	private renderModeDecorations(built: Placed[], settings: PdfAnnotationSettings, scroller: HTMLElement): void {
+	private renderModeDecorations(
+		built: Placed[],
+		settings: PdfAnnotationSettings,
+		scroller: HTMLElement,
+		marks: AnchoredAnnotation[] = []
+	): void {
 		// Clearing a Map does not remove its DOM. Keep this defensive cleanup even
 		// though normal rebuilds now draw decorations only in the final pass.
 		for (const parts of this.leaders.values()) {
 			parts.line.remove();
 			parts.knob.remove();
 		}
-		for (const band of this.bands.values()) band.remove();
+		for (const bands of this.bands.values()) for (const band of bands) band.remove();
 		this.hitAreas = [];
 		this.bands.clear();
 		this.leaders.clear();
@@ -1012,26 +1182,48 @@ export class AnnotationLayer {
 			if (isUnresolvedAnchor(rect)) continue;
 
 			const box = measurePageBox(pageView, scroller, scrollerRect);
-			const x0 = box.left + ((Math.min(rect[0], rect[2]) - box.ptX0) / box.ptWidth) * box.width;
-			const x1 = box.left + ((Math.max(rect[0], rect[2]) - box.ptX0) / box.ptWidth) * box.width;
-			const y0 = box.top + ((box.ptY1 - Math.max(rect[1], rect[3])) / box.ptHeight) * box.height;
-			const y1 = box.top + ((box.ptY1 - Math.min(rect[1], rect[3])) / box.ptHeight) * box.height;
+			const { x0, x1, y0, y1 } = pdfRectInPageBox(pageView, rect, box);
 
 			// Recorded in every mode: reverse hover uses them when the mode wants it,
 			// and right-clicking the region to edit its note works regardless.
-			this.hitAreas.push({ ann, el, x0, x1, y0, y1 });
+			const lines = (ann.anchorRects?.length ? ann.anchorRects : [rect]).map((lineRect) => pdfRectInPageBox(pageView, lineRect, box));
+			for (const line of lines) this.hitAreas.push({ ann, el, ...line });
 
 			if (mode === "always") {
-				const band = layer.createDiv("margin-notes-pdf-anchor-band");
-				band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
-				band.setCssStyles({ left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
-				this.bands.set(ann.id, band);
+				const bands = lines.map((line) => {
+					const band = layer.createDiv("margin-notes-pdf-anchor-band");
+					band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
+					band.setCssStyles({ left: `${line.x0}px`, top: `${line.y0}px`, width: `${line.x1 - line.x0}px`, height: `${line.y1 - line.y0}px` });
+					return band;
+				});
+				this.bands.set(ann.id, bands);
 			}
 			// A collapsed note should render as exactly one point. Keeping the
 			// leader's draggable endpoint created a second, unexplained dot.
 			if (leaderVisible(ann.collapsed, ann.showLeader, mode === "line")) {
 				this.drawLeader(layer, ann, el, { x0, x1, y0, y1 }, pageView);
 			}
+		}
+
+		// Mark-only annotations are deliberately independent of the global note
+		// highlight mode: the band is their entire visible representation. It stays
+		// pointer-inert so native PDF text selection remains available; right-click
+		// and hover use the same scroller-level geometry hit testing as note anchors.
+		for (const { ann, pageView, rect } of marks) {
+			if (!pageView.div.isConnected || !pageView.pdfPage?.view || isUnresolvedAnchor(rect)) continue;
+			const box = measurePageBox(pageView, scroller, scrollerRect);
+			const bands: HTMLElement[] = [];
+			for (const lineRect of ann.anchorRects?.length ? ann.anchorRects : [rect]) {
+				const { x0, x1, y0, y1 } = pdfRectInPageBox(pageView, lineRect, box);
+				this.hitAreas.push({ ann, x0, x1, y0, y1 });
+
+				const band = layer.createDiv("margin-notes-pdf-anchor-band margin-notes-pdf-mark-only");
+				band.dataset.annotationId = ann.id;
+				band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
+				band.setCssStyles({ left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+				bands.push(band);
+			}
+			this.bands.set(ann.id, bands);
 		}
 	}
 
@@ -1163,8 +1355,7 @@ export class AnnotationLayer {
 	 * made in the first place.
 	 */
 	private onScrollerMove = (ev: MouseEvent): void => {
-		if (this.hitAreas.length === 0 || !this.scroller) return;
-		if (!highlightsBothWays(this.getSettings().highlightMode)) return;
+		if (this.markPopover || this.hitAreas.length === 0 || !this.scroller) return;
 		// While the pointer is on a note, that note's own mouseenter owns the
 		// highlight. Without this the two fight: the note lights its anchor, then
 		// the very next mousemove finds no anchor under the cursor and clears it.
@@ -1173,23 +1364,28 @@ export class AnnotationLayer {
 		const x = ev.clientX - r.left + this.scroller.scrollLeft;
 		const y = ev.clientY - r.top + this.scroller.scrollTop;
 
-		const hit = this.hitAreas.find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+		const reverseNotes = highlightsBothWays(this.getSettings().highlightMode);
+		const hit = this.hitAreas.find(
+			(h) => (h.ann.markOnly || reverseNotes) && x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1
+		);
 		if (hit?.ann.id === this.hoveredAnchorId) return;
 		this.hoveredAnchorId = hit?.ann.id ?? null;
 
-		for (const h of this.hitAreas) h.el.removeClass("is-linked");
+		for (const h of this.hitAreas) h.el?.removeClass("is-linked");
 		this.endHoverHighlight();
 		this.clearHoverPreview();
 		if (!hit) return;
 
-		hit.el.addClass("is-linked");
-		if (hit.ann.collapsed) this.showCollapsedPreview(hit);
+		hit.el?.addClass("is-linked");
+		if ((hit.ann.markOnly && hit.ann.text) || (!hit.ann.markOnly && hit.ann.collapsed)) this.showCollapsedPreview(hit);
 		const pageView = this.last?.pages.get(hit.ann.page);
 		if (pageView) this.beginHoverHighlight(pageView, hit.ann);
 	};
 
 	destroy(): void {
 		window.clearTimeout(this.rebuildTimer);
+		this.cancelPendingMarkClick();
+		this.markPopover?.close();
 		this.zoom.destroy();
 		this.hoverMark = null;
 		this.clearHoverPreview();
@@ -1199,6 +1395,10 @@ export class AnnotationLayer {
 			this.leftSpace.clear(this.scroller);
 			this.scroller.removeEventListener("mousemove", this.onScrollerMove);
 			this.scroller.removeEventListener("contextmenu", this.onScrollerContextMenu);
+			this.scroller.removeEventListener("pointerdown", this.onScrollerPointerDown, true);
+			this.scroller.removeEventListener("click", this.onScrollerClick, true);
+			this.scroller.removeEventListener("dblclick", this.onScrollerDoubleClick, true);
+			this.scroller.removeEventListener("scroll", this.onScrollerScroll);
 		}
 		this.hitAreas = [];
 		this.layer?.remove();

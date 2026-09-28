@@ -23,6 +23,14 @@ function getViewerComponent(view: FileView): PDFViewerComponent | null {
 	return (view as unknown as { viewer?: PDFViewerComponent }).viewer ?? null;
 }
 
+export function currentPdfPageInfo(view: FileView): { page: number; count: number | null } | null {
+	const viewer = getViewerComponent(view)?.child?.pdfViewer?.pdfViewer;
+	if (!viewer) return null;
+	const page = viewer.currentPageNumber;
+	if (!Number.isInteger(page) || page < 1) return null;
+	return { page, count: viewer.pdfDocument?.numPages ?? null };
+}
+
 /**
  * Exposes the loaded Obsidian PDF viewer to narrowly scoped adapters such as the
  * native-outline fallback. Keep the undocumented component-chain lookup here so

@@ -20,6 +20,8 @@ import {
 	type SharedStrategy,
 } from "./pairing-state";
 import type { OrphanedAnnotationSource } from "./annotation-recovery";
+import { mergeManualOutlines, normalizeManualOutline, type ManualOutlineEntry } from "./manual-outline";
+import { buildAnnotationStatusSummaries, type AnnotationStatusSummary } from "./annotation-status";
 
 interface FileShape {
 	version: number;
@@ -36,6 +38,8 @@ interface FileShape {
 	pairModes: Record<string, PairMode>;
 	/** File revision markers used only to decide when a layout must be rechecked. */
 	pairRevisions: Record<string, Record<string, FileRevision>>;
+	/** User-authored PDF headings, mirrored to each member of a shared group. */
+	manualOutlines: Record<string, ManualOutlineEntry[]>;
 	/** Present only in v3 input and deliberately discarded during migration. */
 	fingerprints?: unknown;
 }
@@ -77,7 +81,12 @@ export interface ColorKeyMigration {
 const MAX_HISTORY = 100;
 
 function cloneAnnotation(ann: PdfAnnotation): PdfAnnotation {
-	return { ...ann, layerIds: ann.layerIds ? [...ann.layerIds] : undefined };
+	return {
+		...ann,
+		anchor: [...ann.anchor] as PdfAnnotation["anchor"],
+		anchorRects: ann.anchorRects?.map((rect) => [...rect] as PdfAnnotation["anchor"]),
+		layerIds: ann.layerIds ? [...ann.layerIds] : undefined,
+	};
 }
 
 export class PdfAnnotationStore {
@@ -85,6 +94,7 @@ export class PdfAnnotationStore {
 	private pairs: Record<string, string> = {};
 	private pairModes: Record<string, PairMode> = {};
 	private pairRevisions: Record<string, Record<string, FileRevision>> = {};
+	private manualOutlines: Record<string, ManualOutlineEntry[]> = {};
 	private migratedLegacyGroups = 0;
 	private path = "";
 	private listeners = new Set<StoreListener>();
@@ -189,6 +199,11 @@ export class PdfAnnotationStore {
 		this.pairs = { ...(parsed?.pairs ?? {}) };
 		this.pairModes = {};
 		this.pairRevisions = parsed.pairRevisions ?? {};
+		this.manualOutlines = {};
+		for (const [path, entries] of Object.entries(parsed.manualOutlines ?? {})) {
+			const normalized = normalizeManualOutline(entries);
+			if (normalized.length > 0) this.manualOutlines[normalizePath(path)] = normalized;
+		}
 		this.migratedLegacyGroups = 0;
 		for (const group of new Set(Object.values(this.pairs))) {
 			this.pairModes[group] = parsed.pairModes?.[group] ?? "shared";
@@ -211,7 +226,7 @@ export class PdfAnnotationStore {
 		}
 		if ((parsed.version ?? 0) < 5) this.pairRevisions = {};
 		this.prunePairRevisions();
-		return parsed.version !== 9 || parsed.fingerprints !== undefined || this.migratedLegacyGroups > 0;
+		return parsed.version !== 10 || parsed.fingerprints !== undefined || this.migratedLegacyGroups > 0;
 	}
 
 	/** Loads from `configuredPath`, migrating anything left at older locations. */
@@ -273,8 +288,9 @@ export class PdfAnnotationStore {
 		const dir = this.path.includes("/") ? this.path.slice(0, this.path.lastIndexOf("/")) : "";
 		if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
 		const payload: FileShape = {
-			version: 9,
+			version: 10,
 			pdfAnnotations: this.data,
+			manualOutlines: this.manualOutlines,
 			pairs: this.pairs,
 			pairModes: this.pairModes,
 			pairRevisions: this.pairRevisions,
@@ -291,6 +307,38 @@ export class PdfAnnotationStore {
 	/** All files in the same shared group, including `pdfPath` itself. */
 	sharedMembers(pdfPath: string): string[] {
 		return groupMembers(this.pairs, normalizePath(pdfPath));
+	}
+
+	manualOutlineForFile(pdfPath: string): ManualOutlineEntry[] {
+		return (this.manualOutlines[normalizePath(pdfPath)] ?? []).map((item) => ({ ...item }));
+	}
+
+	upsertManualOutline(pdfPath: string, entry: ManualOutlineEntry): void {
+		const path = normalizePath(pdfPath);
+		const normalized = normalizeManualOutline([entry])[0];
+		if (!normalized) return;
+		const next = this.manualOutlineForFile(path);
+		const index = next.findIndex((item) => item.id === entry.id);
+		if (index >= 0) next[index] = normalized;
+		else next.push(normalized);
+		for (const member of this.sharedMembers(path).length > 0 ? this.sharedMembers(path) : [path]) {
+			this.manualOutlines[member] = next.map((item) => ({ ...item }));
+		}
+		this.save();
+		this.notify();
+	}
+
+	removeManualOutline(pdfPath: string, id: string): boolean {
+		const path = normalizePath(pdfPath);
+		const next = this.manualOutlineForFile(path).filter((item) => item.id !== id);
+		if (next.length === this.manualOutlineForFile(path).length) return false;
+		for (const member of this.sharedMembers(path).length > 0 ? this.sharedMembers(path) : [path]) {
+			if (next.length > 0) this.manualOutlines[member] = next.map((item) => ({ ...item }));
+			else delete this.manualOutlines[member];
+		}
+		this.save();
+		this.notify();
+		return true;
 	}
 
 	/** Persisted member paths, used to reconcile folder moves and delayed deletes. */
@@ -311,6 +359,11 @@ export class PdfAnnotationStore {
 
 	annotationCount(pdfPath: string): number {
 		return this.forFile(pdfPath).length;
+	}
+
+	/** Read-only overview used by the global command; shared buckets are deduplicated. */
+	annotationStatusSummaries(existingPaths: ReadonlySet<string>): AnnotationStatusSummary[] {
+		return buildAnnotationStatusSummaries(this.data, this.pairs, this.pairModes, existingPaths);
 	}
 
 	/**
@@ -458,7 +511,13 @@ export class PdfAnnotationStore {
 	joinShared(a: string, b: string, strategy: SharedStrategy = "merge"): void {
 		const pa = normalizePath(a);
 		const pb = normalizePath(b);
+		const beforeMembers = [...new Set([pa, pb, ...this.sharedMembers(pa), ...this.sharedMembers(pb)])];
+		const combinedOutline = mergeManualOutlines(...beforeMembers.map((path) => this.manualOutlineForFile(path)));
 		joinSharedGroups({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, pa, pb, strategy);
+		for (const member of this.sharedMembers(pa)) {
+			if (combinedOutline.length > 0) this.manualOutlines[member] = combinedOutline.map((item) => ({ ...item }));
+			else delete this.manualOutlines[member];
+		}
 		this.clearHistory();
 		this.prunePairRevisions();
 		const group = this.pairs[pa];
@@ -674,11 +733,18 @@ export class PdfAnnotationStore {
 			if (nextKey !== key) changed.add(key);
 			nextData[nextKey] = mergeAnnotationLists(nextData[nextKey], list);
 		}
+		const nextManualOutlines: Record<string, ManualOutlineEntry[]> = {};
+		for (const [path, entries] of Object.entries(this.manualOutlines)) {
+			const nextPath = remap(path);
+			if (nextPath !== path) changed.add(path);
+			nextManualOutlines[nextPath] = mergeManualOutlines(nextManualOutlines[nextPath] ?? [], entries);
+		}
 
 		if (changed.size === 0) return 0;
 		this.pairs = nextPairs;
 		this.pairModes = nextModes;
 		this.data = nextData;
+		this.manualOutlines = nextManualOutlines;
 		// Revisions contain exact member paths. Rebuild them from Obsidian's new
 		// file objects instead of trying to patch several nested maps independently.
 		this.pairRevisions = {};

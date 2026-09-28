@@ -1,13 +1,16 @@
-import { TFile } from "obsidian";
+import { TFile, type FileView } from "obsidian";
 import { getPageInfoForNode, type PdfRect } from "./pdf-layer";
 import { computeSelectionRects, firstTextNode, getTextLayerInfo, type Selection } from "./selection-geom";
 import type { PDFPageView } from "./pdfjs-types";
 
 export interface AnchorResult {
 	file: TFile;
+	view: FileView;
 	pageNumber: number;
 	pageView: PDFPageView;
 	rect: PdfRect;
+	/** One PDF-space rectangle per selected visual line. */
+	rects: PdfRect[];
 }
 
 function textDivIndexOf(textDivs: HTMLElement[], node: Node): number {
@@ -77,8 +80,9 @@ export function anchorFromActiveSelection(): AnchorResult | null {
 
 	const selection: Selection = [beginIndex, start.offset, endIndex, end.offset];
 	const lines = computeSelectionRects(info.pageView, selection);
-	const rect = unionRect(lines.map((l) => l.rect));
+	const rects = lines.map((l) => l.rect);
+	const rect = unionRect(rects);
 	if (!rect) return null;
 
-	return { file, pageNumber: info.pageNumber, pageView: info.pageView, rect };
+	return { file, view: info.view, pageNumber: info.pageNumber, pageView: info.pageView, rect, rects };
 }

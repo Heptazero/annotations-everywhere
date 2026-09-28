@@ -3,12 +3,16 @@ import "./color-slots.test";
 import "./annotation-layers.test";
 import "./reading-order.test";
 import "./markdown-margin.test";
+import "./mark-click.test";
+import "./manual-outline.test";
 import "./pdf-layout.test";
 import "./editor-key-scope.test";
 import "./source-annotation-sync.test";
 import { TFile } from "obsidian";
 import { PdfAnnotationStore } from "../src/pdf/annotation-store";
+import { normalizeAnnotation } from "../src/pdf/annotation-types";
 import { compatibleRecoverySources } from "../src/pdf/annotation-recovery";
+import { buildAnnotationStatusSummaries } from "../src/pdf/annotation-status";
 import { filterAnnotations, parseAnnotationSearch } from "../src/pdf/annotation-search";
 import { comparePageLayouts, largestCompatibleLayoutCluster } from "../src/pdf/layout-check";
 import { adaptiveLeaderEndpoints, leaderVisible } from "../src/pdf/leader-geometry";
@@ -55,6 +59,41 @@ function state(data: Record<string, Ann[]> = {}) {
 	assert.equal(relationMode(s, "paper.pdf"), "shared");
 	assert.deepEqual(s.pdfAnnotations["paper.pdf"].map((a) => a.id), ["a", "b"]);
 	assert.equal(s.pdfAnnotations["cn.pdf"], undefined);
+}
+
+// The global overview counts a shared group once, keeps orphaned buckets
+// visible, excludes empty buckets, and computes first/latest valid timestamps.
+{
+	const notes = (ids: string[], createdAt: number | undefined, updatedAt: number | undefined) =>
+		ids.map((id) => ({ ...annotation(id), createdAt, updatedAt }));
+	const summaries = buildAnnotationStatusSummaries(
+		{
+			"shared-group.pdf": notes(["s1", "s2"], 20, 50),
+			"private.pdf": notes(["p"], 10, 100),
+			"orphan.pdf": notes(["o"], 5, 30),
+			"empty.pdf": [],
+		},
+		{ "shared-group.pdf": "shared-group.pdf", "translation.pdf": "shared-group.pdf" },
+		{ "shared-group.pdf": "shared" },
+		new Set(["shared-group.pdf", "private.pdf", "translation.pdf"])
+	);
+	assert.deepEqual(summaries.map((summary) => summary.key), ["private.pdf", "shared-group.pdf", "orphan.pdf"]);
+	assert.equal(summaries[1].count, 2);
+	assert.equal(summaries[1].status, "shared");
+	assert.deepEqual(summaries[1].livePaths, ["shared-group.pdf", "translation.pdf"]);
+	assert.equal(summaries[2].status, "orphaned");
+	assert.equal(summaries[0].firstCreatedAt, 10);
+	assert.equal(summaries[0].lastUpdatedAt, 100);
+	assert.equal(summaries[2].firstCreatedAt, 5);
+	assert.equal(summaries[2].lastUpdatedAt, 30);
+	const unknown = buildAnnotationStatusSummaries(
+		{ "unknown.pdf": notes(["u"], undefined, undefined) },
+		{},
+		{},
+		new Set(["unknown.pdf"])
+	)[0];
+	assert.equal(unknown.firstCreatedAt, null);
+	assert.equal(unknown.lastUpdatedAt, null);
 }
 
 // Adding a third file extends, rather than replaces, the existing group.
@@ -236,6 +275,37 @@ function storeHarness(payload: unknown, files: TFile[]) {
 	return { store: new PdfAnnotationStore(app as never, plugin as never), disk };
 }
 
+// Manual headings survive reload, sharing, unpairing and path changes without
+// modifying the annotation bucket or silently disappearing from translations.
+{
+	const a = new TFile("paper.pdf");
+	const b = new TFile("cn_paper.pdf");
+	const c = new TFile("alternate.pdf");
+	const h = storeHarness({ version: 9, pdfAnnotations: {}, pairs: {}, pairModes: {}, pairRevisions: {} }, [a, b, c]);
+	await h.store.load("annotations.json");
+	h.store.upsertManualOutline(a.path, { id: "m1", title: "方法", level: 1, page: 3 });
+	h.store.joinShared(a.path, b.path);
+	assert.deepEqual(h.store.manualOutlineForFile(b.path).map((item) => item.title), ["方法"]);
+	h.store.upsertManualOutline(b.path, { id: "m2", title: "实验", level: 1, page: 5 });
+	assert.equal(h.store.manualOutlineForFile(a.path).length, 2);
+	h.store.joinShared(b.path, c.path);
+	assert.equal(h.store.manualOutlineForFile(c.path).length, 2);
+	h.store.leaveGroup(b.path);
+	assert.equal(h.store.manualOutlineForFile(b.path).length, 2);
+	h.store.removeManualOutline(b.path, "m2");
+	assert.equal(h.store.manualOutlineForFile(a.path).length, 2);
+	assert.equal(h.store.manualOutlineForFile(c.path).length, 2);
+	assert.equal(h.store.manualOutlineForFile(b.path).length, 1);
+	h.store.renameFile(b.path, "moved/cn_paper.pdf");
+	assert.equal(h.store.manualOutlineForFile("moved/cn_paper.pdf").length, 1);
+	assert.equal(h.store.manualOutlineForFile(b.path).length, 0);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	const persisted = JSON.parse(h.disk.get("annotations.json") ?? "{}");
+	assert.equal(persisted.version, 10);
+	assert.equal(persisted.manualOutlines["moved/cn_paper.pdf"][0].title, "方法");
+	assert.deepEqual(persisted.pdfAnnotations, {});
+}
+
 // Recovery only offers vanished private buckets whose page numbers fit the
 // current PDF, and filename resemblance ranks rather than hides candidates.
 {
@@ -296,7 +366,7 @@ function storeHarness(payload: unknown, files: TFile[]) {
 	assert.equal(h.store.annotationCount("a.pdf"), 1);
 	assert.equal(h.store.annotationCount("b.pdf"), 1);
 	const written = JSON.parse(h.disk.get("annotations.json") ?? "{}");
-	assert.equal(written.version, 9);
+	assert.equal(written.version, 10);
 	assert.equal(written.fingerprints, undefined);
 }
 
@@ -428,14 +498,22 @@ console.log("annotation-store migration/revision/layers: 5 cases passed");
 const searchable = [
 	{ ...annotation("实验结果:在 $2^{30}$ 中 25 很小"), page: 2 },
 	{ ...annotation("Asymmetric robustness\nremains"), page: 3 },
+	{ ...annotation("mark"), text: "", quote: "E = mc squared", markOnly: true, page: 4 },
 ];
 assert.deepEqual(filterAnnotations(searchable as never, "2^{30}"), [searchable[0]]);
 assert.deepEqual(filterAnnotations(searchable as never, "asymmetric ROBUSTNESS"), [searchable[1]]);
 assert.deepEqual(filterAnnotations(searchable as never, "page:3 remains"), [searchable[1]]);
 assert.deepEqual(filterAnnotations(searchable as never, "第 2 页 实验结果"), [searchable[0]]);
 assert.deepEqual(filterAnnotations(searchable as never, "page:2 remains"), []);
+assert.deepEqual(filterAnnotations(searchable as never, "page:4 squared"), [searchable[2]]);
 assert.deepEqual(parseAnnotationSearch("第3页 latex"), { pages: [3], terms: ["latex"] });
-console.log("annotation-search: 6 cases passed");
+assert.equal(normalizeAnnotation({ markOnly: true }).markOnly, true);
+assert.equal(normalizeAnnotation({ markOnly: false }).markOnly, undefined);
+const commentedMark = normalizeAnnotation({ markOnly: true, quote: "source", text: "later note", colorKey: "slot-one" });
+assert.equal(commentedMark.markOnly, true);
+assert.deepEqual(filterAnnotations([commentedMark], "later note"), [commentedMark]);
+assert.equal(commentedMark.colorKey, "slot-one");
+console.log("annotation-search/mark-only: 12 cases passed");
 
 const outlineDoc: PdfOutlineDocument = {
 	getOutline: async () => null,
@@ -540,4 +618,21 @@ new NativeOutlineBridge(
 );
 await flushOutlineBridge();
 assert.equal(ownOutlineRenders.length, 0);
+let manualAvailable = true;
+const manualBridge = new NativeOutlineBridge(
+	ownOutlineView as never,
+	new Component() as never,
+	() => ownOutlineView.file?.path ?? null,
+	async () => ({ sourcePath: "already-outlined.pdf", hasManual: true, items: [
+		{ title: "自己的目录", page: 1, topRatio: null, items: [] },
+		{ title: "手动标题", page: 2, topRatio: null, items: [], manualId: "m1" },
+	] }),
+	() => manualAvailable
+);
+await flushOutlineBridge();
+assert.equal((ownOutlineRenders.at(-1)?.[1] as { title: string }).title, "手动标题");
+manualAvailable = false;
+manualBridge.refresh();
+await flushOutlineBridge();
+assert.equal((ownOutlineRenders.at(-1)?.[0] as { title: string }).title, "自己的目录");
 console.log("native-outline-bridge: 4 cases passed");

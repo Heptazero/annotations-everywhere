@@ -45,6 +45,15 @@ export default class MarginNotesPlugin extends Plugin {
 		this.addPdfNoteCommand("pdf-add-note-right", "[PDF] 加批注:右侧轨道", { pinned: true, side: "right", collapsed: false });
 		this.addPdfNoteCommand("pdf-add-note-left", "[PDF] 加批注:左侧轨道", { pinned: true, side: "left", collapsed: false });
 		this.addPdfNoteCommand("pdf-add-note-free", "[PDF] 加批注:自由摆放(便利贴)", { pinned: false, side: "right", collapsed: false });
+		this.addCommand({
+			id: "pdf-add-mark-only",
+			name: "[PDF] 仅勾画选区（无批注框）",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasActivePDFView();
+				if (!checking && active) this.pdfAnnotations.addMarkOnly();
+				return active;
+			},
+		});
 
 		// Deliberately NO default hotkey: Cmd+Z is handled by a listener on the PDF
 		// view itself (controller.attachUndoKeys), which cannot interfere with the
@@ -141,6 +150,11 @@ export default class MarginNotesPlugin extends Plugin {
 			callback: () => void this.openAnnotationList(),
 		});
 		this.addCommand({
+			id: "pdf-show-all-annotation-status",
+			name: "[PDF] 查看全库批注状态",
+			callback: () => this.pdfAnnotations.openAnnotationStatusPicker(),
+		});
+		this.addCommand({
 			id: "pdf-search-annotations",
 			name: "[PDF] 搜索当前 PDF 的批注",
 			checkCallback: (checking) => {
@@ -155,6 +169,15 @@ export default class MarginNotesPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const active = this.pdfAnnotations.hasPdfTarget();
 				if (!checking && active) void this.openAnnotationList("outline");
+				return active;
+			},
+		});
+		this.addCommand({
+			id: "pdf-add-manual-outline-heading",
+			name: "[PDF] 添加手动大纲标题",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) void this.openAnnotationList("outline").then(() => this.pdfAnnotations.openManualOutlineEditor());
 				return active;
 			},
 		});

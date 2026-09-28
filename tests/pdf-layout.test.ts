@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { LeftAnnotationSpace, requiredLeftGutter } from "../src/pdf/annotation-space";
-import { anchorTop, defaultFreeXPct, freeLeft, measurePageBox } from "../src/pdf/page-geometry";
+import { anchorTop, defaultFreeXPct, freeLeft, measurePageBox, pdfRectInPageBox } from "../src/pdf/page-geometry";
 import { railGapPt, railLeft, railWidthPt } from "../src/pdf/rail-layout";
 
 const settings = {
@@ -53,6 +53,18 @@ const measured = measurePageBox(fakePage as never, fakeScroller as never, { left
 assert.equal(measured.left, 100);
 assert.equal(measured.top, 150);
 assert.equal(measured.unit, 2);
+
+// A selected pixel rectangle must round-trip through the viewer's viewport,
+// including a rotated page. Media-box width/height interpolation cannot do this.
+const textRect: [number, number, number, number] = [10, 700, 30, 720];
+assert.deepEqual(
+	pdfRectInPageBox({ viewport: { convertToViewportPoint: (x: number, y: number) => [x * 2, (792 - y) * 2] } } as never, textRect, box),
+	{ x0: 520, x1: 560, y0: 244, y1: 284 }
+);
+assert.deepEqual(
+	pdfRectInPageBox({ viewport: { convertToViewportPoint: (x: number, y: number) => [y * 2, x * 2] } } as never, textRect, box),
+	{ x0: 1900, x1: 1940, y0: 120, y1: 160 }
+);
 
 // The initial gutter reveals the rail. Later changes accumulate until the final
 // layout commits, when scrollWidth is ready and the page can keep its position.

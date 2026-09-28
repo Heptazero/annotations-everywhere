@@ -65,7 +65,7 @@ export function computeSelectionRects(pageView: PDFPageView, sel: Selection): Se
 	for (const line of merged) {
 		const [x0, y0] = screenToPdfPoint(pageView, line.left, line.bottom);
 		const [x1, y1] = screenToPdfPoint(pageView, line.right, line.top);
-		rects.push({ rect: [x0, y0, x1, y1], heightRatio: line.heightRatio, hasGap: line.hasGap });
+		rects.push({ rect: [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)], heightRatio: line.heightRatio, hasGap: line.hasGap });
 	}
 	return rects;
 }

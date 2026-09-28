@@ -6,13 +6,14 @@ import type { ObsidianViewer, PDFDocumentProxy, PDFOutlineViewer } from "./pdfjs
 export interface SharedOutlineResult {
 	sourcePath: string | null;
 	items: PdfOutlineItem[];
+	hasManual?: boolean;
 	error?: string;
 }
 
 /**
- * Supplies a shared PDF's outline to Obsidian's own PDF sidebar only when the
- * currently displayed PDF has no outline of its own. Nothing is written to the
- * PDF or annotation store; this is a session-only view adapter.
+ * Supplies a shared outline when this PDF has none, or a combined native/manual
+ * outline when user headings exist. Nothing is written to the PDF; only the
+ * reader's in-session outline tree is replaced.
  */
 export class NativeOutlineBridge {
 	private viewer: ObsidianViewer | null = null;
@@ -25,7 +26,8 @@ export class NativeOutlineBridge {
 		view: FileView,
 		owner: Component,
 		private currentPath: () => string | null,
-		private lookup: (pdfPath: string) => Promise<SharedOutlineResult>
+		private lookup: (pdfPath: string) => Promise<SharedOutlineResult>,
+		private hasManual: (pdfPath: string) => boolean = () => false
 	) {
 		onPdfViewerReady(view, owner, (viewer) => this.attach(viewer, owner));
 	}
@@ -38,7 +40,7 @@ export class NativeOutlineBridge {
 		this.viewer = viewer;
 		this.outlineViewer = viewer.pdfOutlineViewer ?? null;
 		const onOutlineLoaded = (event: { source?: PDFOutlineViewer; outlineCount?: number }) => {
-			if (this.rendering || (event.outlineCount ?? 0) > 0) return;
+			if (this.rendering || ((event.outlineCount ?? 0) > 0 && !this.hasManual(this.currentPath() ?? ""))) return;
 			if (event.source) this.outlineViewer = event.source;
 			this.refresh();
 		};
@@ -82,17 +84,17 @@ export class NativeOutlineBridge {
 		}
 		if (!this.stillCurrent(token, path, doc)) return;
 
-		if (nativeOutline && nativeOutline.length > 0) {
+		if (nativeOutline && nativeOutline.length > 0 && !this.hasManual(path)) {
 			if (this.injectedDocument === doc) {
 				this.injectedDocument = null;
 				this.render(nativeOutline, doc);
 			}
 			return;
 		}
-
 		const shared = await this.lookup(path);
 		if (!this.stillCurrent(token, path, doc)) return;
-		if (shared.sourcePath && shared.sourcePath !== path && outlineHasDestination(shared.items)) {
+
+		if (shared.sourcePath && outlineHasDestination(shared.items) && (shared.hasManual || shared.sourcePath !== path)) {
 			const outline = await toNativePdfOutline(shared.items, doc);
 			if (!this.stillCurrent(token, path, doc)) return;
 			this.injectedDocument = doc;
@@ -103,7 +105,7 @@ export class NativeOutlineBridge {
 		// Unbinding must remove an outline injected earlier in this same open tab.
 		if (this.injectedDocument === doc) {
 			this.injectedDocument = null;
-			this.render(null, doc);
+			this.render(nativeOutline, doc);
 		}
 	}
 }

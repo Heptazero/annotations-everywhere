@@ -11,6 +11,8 @@ export interface PDFPageViewport {
 	height: number;
 	scale: number;
 	rotation: number;
+	// Inverse of PDFPageView.getPagePoint() for page-local coordinates.
+	convertToViewportPoint(x: number, y: number): [number, number];
 }
 
 export interface PDFPageProxy {

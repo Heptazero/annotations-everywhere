@@ -4,6 +4,8 @@ import type { PDFDocumentProxy } from "./pdfjs-types";
 export interface PdfOutlineItem {
 	title: string;
 	page: number | null;
+	/** Present only for a user-authored heading; PDF metadata has no such ID. */
+	manualId?: string;
 	/** Position measured from the top of the page, 0–1. */
 	topRatio: number | null;
 	items: PdfOutlineItem[];

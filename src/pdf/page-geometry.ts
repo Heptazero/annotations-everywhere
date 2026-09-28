@@ -37,6 +37,20 @@ export function measurePageBox(pageView: PDFPageView, scroller: HTMLElement, scr
 	};
 }
 
+/** Convert a stored PDF rect through the same viewport used by getPagePoint().
+ * Width/height ratios from the raw PDF media box ignore page rotation and can
+ * disagree with text selection even on ordinary pages with viewer chrome. */
+export function pdfRectInPageBox(pageView: PDFPageView, rect: PdfRect, box: PageBox): { x0: number; x1: number; y0: number; y1: number } {
+	const [ax, ay] = pageView.viewport.convertToViewportPoint(rect[0], rect[1]);
+	const [bx, by] = pageView.viewport.convertToViewportPoint(rect[2], rect[3]);
+	return {
+		x0: box.left + Math.min(ax, bx),
+		x1: box.left + Math.max(ax, bx),
+		y0: box.top + Math.min(ay, by),
+		y1: box.top + Math.max(ay, by),
+	};
+}
+
 export function anchorTop(rect: PdfRect, offsetY: number | undefined, box: PageBox): number {
 	const topPt = box.ptY1 - Math.max(rect[1], rect[3]);
 	return box.top + (topPt / box.ptHeight) * box.height + (offsetY ?? 0) * box.unit;

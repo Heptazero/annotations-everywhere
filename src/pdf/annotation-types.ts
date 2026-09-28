@@ -20,6 +20,13 @@ export interface PdfAnnotation {
 	id: string;
 	page: number;
 	/**
+	 * A highlight with no on-page note card or dot. It may still carry `text`:
+	 * that comment appears on hover/click and in the list without creating a
+	 * second annotation record. It still participates in sharing, layers,
+	 * colours and search, including for equations without selectable PDF text.
+	 */
+	markOnly?: boolean;
+	/**
 	 * Where the note points — from a text selection or dragged box, in PDF
 	 * points. `[0,0,0,0]` (the default when omitted) means "unresolved": if
 	 * `quote` is set, the renderer looks it up on `page`'s text layer and
@@ -28,6 +35,8 @@ export interface PdfAnnotation {
 	 * spot near the top of the page rather than being invisible.
 	 */
 	anchor: PdfRect;
+	/** Exact visual-line rectangles for text selections, with or without a note card. */
+	anchorRects?: PdfRect[];
 	/**
 	 * Text to search for on `page` to resolve `anchor` when it's unresolved —
 	 * the field an AI (or anyone without a live PDF viewer) can actually supply,
@@ -105,7 +114,14 @@ export function normalizeAnnotation(raw: LegacyAnnotation): PdfAnnotation {
 	const normalized: PdfAnnotation = {
 		id: raw.id ?? makeAnnotationId(),
 		page: raw.page ?? 1,
+		markOnly: raw.markOnly === true ? true : undefined,
 		anchor: raw.anchor ?? [0, 0, 0, 0],
+		anchorRects: Array.isArray(raw.anchorRects)
+			? raw.anchorRects.filter(
+					(rect): rect is PdfRect =>
+						Array.isArray(rect) && rect.length === 4 && rect.every((value) => typeof value === "number" && Number.isFinite(value))
+				)
+			: undefined,
 		pinned: raw.pinned ?? !legacyFloating,
 		collapsed: raw.collapsed ?? legacyFloating,
 		side: raw.side ?? "right",

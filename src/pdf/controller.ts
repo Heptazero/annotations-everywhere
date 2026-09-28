@@ -6,6 +6,8 @@ import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./an
 import { AnnotationLayerPicker } from "./annotation-layer-picker";
 import { compatibleRecoverySources, type OrphanedAnnotationSource } from "./annotation-recovery";
 import { AnnotationRecoveryPicker } from "./annotation-recovery-picker";
+import { AnnotationStatusPicker } from "./annotation-status-picker";
+import type { AnnotationStatusSummary } from "./annotation-status";
 import {
 	applyPdfAnnotationStyleSettings,
 	clearPdfAnnotationStyleSettings,
@@ -16,11 +18,14 @@ import {
 import { HighlightModePicker } from "./highlight-mode-picker";
 import { PdfAnnotationStore } from "./annotation-store";
 import { makeAnnotationId, type MarginSide, type PdfAnnotation } from "./annotation-types";
+import { openMarkPopover, type MarkPopoverHandle } from "./mark-popover";
 import { comparePdfLayouts, largestCompatibleLayoutCluster, readPdfLayout } from "./layout-check";
 import { NativeOutlineBridge, type SharedOutlineResult } from "./native-outline-bridge";
+import { combineOutlines, type ManualOutlineEntry } from "./manual-outline";
+import { ManualOutlineModal } from "./manual-outline-modal";
 import { PairDecisionModal, type PairDecision } from "./pair-decision-modal";
 import { isPdf, pairingCandidates as listPairingCandidates } from "./pairing";
-import { getActivePDFView, onPageReady, onScaleChanging, onTextLayerReady, type PdfRect } from "./pdf-layer";
+import { currentPdfPageInfo, getActivePDFView, onPageReady, onScaleChanging, onTextLayerReady, type PdfRect } from "./pdf-layer";
 import { outlineHasDestination, PdfOutlineReader, type PdfOutlineItem } from "./pdf-outline";
 import { sortAnnotationsForReading } from "./reading-order";
 import { SharedFileLifecycle } from "./shared-file-lifecycle";
@@ -43,6 +48,8 @@ export interface NewNoteForm {
 	collapsed: boolean;
 }
 
+type PendingPlacement = { kind: "note"; form: NewNoteForm } | { kind: "mark" };
+
 interface ViewState {
 	pages: Map<number, PDFPageView>;
 	layer: AnnotationLayer;
@@ -60,7 +67,8 @@ export class PdfAnnotationsController {
 	settings: PdfAnnotationSettings = DEFAULT_PDF_ANNOTATION_SETTINGS;
 
 	private rectSelect: RectSelectController = { armed: false };
-	private pendingPlacement: NewNoteForm | null = null;
+	private pendingPlacement: PendingPlacement | null = null;
+	private pendingMarkPopover: { handle: MarkPopoverHandle; view: FileView | null } | null = null;
 	/** Set while waiting for the user to point at a new highlight for an existing note. */
 	private pendingReanchor: { pdfPath: string; id: string } | null = null;
 	private states = new WeakMap<FileView, ViewState>();
@@ -143,6 +151,7 @@ export class PdfAnnotationsController {
 		this.plugin.register(() => {
 			for (const timer of this.layoutRecheckTimers.values()) window.clearTimeout(timer);
 			this.layoutRecheckTimers.clear();
+			this.closePendingMarkPopover();
 		});
 		this.plugin.registerEvent(this.app.workspace.on("layout-change", () => this.scanPDFViews()));
 		this.plugin.registerEvent(
@@ -328,6 +337,36 @@ export class PdfAnnotationsController {
 		return !!file && this.store.isPaired(file.path);
 	}
 
+	/** Opens a searchable overview of every non-empty annotation bucket. */
+	openAnnotationStatusPicker(): void {
+		const existingPaths = new Set(
+			this.app.vault
+				.getFiles()
+				.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
+				.map((candidate) => candidate.path)
+		);
+		const summaries = this.store.annotationStatusSummaries(existingPaths);
+		if (summaries.length === 0) {
+			new Notice("还没有 PDF 批注");
+			return;
+		}
+		new AnnotationStatusPicker(this.app, summaries, (summary) => this.openAnnotationStatus(summary)).open();
+	}
+
+	private openAnnotationStatus(summary: AnnotationStatusSummary): void {
+		const target = summary.livePaths[0];
+		if (!target) {
+			new Notice("这组批注未挂载到现存 PDF；打开目标 PDF 后运行「恢复未挂载批注」");
+			return;
+		}
+		const file = this.app.vault.getAbstractFileByPath(target);
+		if (!isPdf(file)) {
+			new Notice("代表 PDF 已不存在，请先恢复文件或运行「恢复未挂载批注」");
+			return;
+		}
+		void this.app.workspace.getLeaf(false).openFile(file);
+	}
+
 	/**
 	 * Recovers annotations left under a vanished path after the user reorganised
 	 * or restored a PDF outside Obsidian. Page numbers rule out impossible
@@ -404,12 +443,73 @@ export class PdfAnnotationsController {
 	addNote(form: NewNoteForm): void {
 		const sel = anchorFromActiveSelection();
 		if (sel) {
-			this.place(sel.file.path, sel.pageNumber, sel.rect, form);
+			const quote = window.getSelection()?.toString().trim();
+			this.place(sel.file.path, sel.pageNumber, sel.rect, form, quote || undefined, sel.rects);
 			return;
 		}
-		this.pendingPlacement = form;
+		this.pendingPlacement = { kind: "note", form };
 		this.rectSelect.armed = true;
 		new Notice("在 PDF 上拖一个框,标出这条批注指的位置");
+	}
+
+	/**
+	 * Creates a persistent highlight without a note card. A native PDF text
+	 * selection wins and supplies searchable quote text; otherwise the same
+	 * one-shot rectangle tool handles equations, figures and scanned content
+	 * without requiring OCR.
+	 */
+	addMarkOnly(): void {
+		this.pendingPlacement = null;
+		this.pendingReanchor = null;
+		this.rectSelect.armed = false;
+		const sel = anchorFromActiveSelection();
+		if (sel) {
+			const quote = window.getSelection()?.toString().trim();
+			this.showMarkPalette(sel.file.path, sel.pageNumber, sel.pageView, sel.rect, quote || undefined, sel.rects, sel.view);
+			return;
+		}
+		this.pendingPlacement = { kind: "mark" };
+		this.rectSelect.armed = true;
+		new Notice("在 PDF 上拖框勾画公式、图形或没有可选文字的区域");
+	}
+
+	/** Choosing a colour completes creation; dismissing this palette writes nothing. */
+	private showMarkPalette(
+		pdfPath: string,
+		pageNumber: number,
+		pageView: PDFPageView,
+		rect: PdfRect,
+		quote?: string,
+		anchorRects?: PdfRect[],
+		view: FileView | null = getActivePDFView(this.app)
+	): void {
+		this.closePendingMarkPopover();
+		const anchor = anchorRects?.at(-1) ?? rect;
+		const pageBox = pageView.div.getBoundingClientRect();
+		const [ax, ay] = pageView.viewport.convertToViewportPoint(anchor[0], anchor[1]);
+		const [bx, by] = pageView.viewport.convertToViewportPoint(anchor[2], anchor[3]);
+		const handle = openMarkPopover({
+			app: this.app,
+			mode: "create",
+			at: { x: pageBox.left + Math.max(ax, bx) + 6, y: pageBox.top + Math.min(ay, by) },
+			swatches: this.settings.palette,
+			quote,
+			onPickColor: (colorKey) => {
+				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;
+				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey);
+			},
+			onClose: () => {
+				if (this.pendingMarkPopover?.handle === handle) this.pendingMarkPopover = null;
+			},
+		});
+		if (handle) this.pendingMarkPopover = { handle, view };
+	}
+
+	private closePendingMarkPopover(view?: FileView): void {
+		if (this.pendingMarkPopover && (!view || this.pendingMarkPopover.view === view)) {
+			this.pendingMarkPopover.handle.close();
+			this.pendingMarkPopover = null;
+		}
 	}
 
 	/**
@@ -434,19 +534,28 @@ export class PdfAnnotationsController {
 			// something can still identify the passage. A box has no such handle,
 			// so it stays coordinates-only.
 			const text = window.getSelection()?.toString().trim();
-			this.applyReanchor(pdfPath, ann.id, sel.pageNumber, sel.rect, text || undefined);
+			this.applyReanchor(pdfPath, ann.id, sel.pageNumber, sel.rect, text || undefined, sel.rects);
 			return;
 		}
+		this.pendingPlacement = null;
 		this.pendingReanchor = { pdfPath, id: ann.id };
 		this.rectSelect.armed = true;
 		new Notice("在 PDF 上选中文字或拖一个框,重新指定这条批注指向的位置");
 	}
 
-	private applyReanchor(pdfPath: string, id: string, pageNumber: number, rect: PdfRect, quote?: string): void {
+	private applyReanchor(
+		pdfPath: string,
+		id: string,
+		pageNumber: number,
+		rect: PdfRect,
+		quote?: string,
+		anchorRects?: PdfRect[]
+	): void {
 		const ann = this.store.forFile(pdfPath).find((a) => a.id === id);
 		if (!ann) return;
 		ann.page = pageNumber;
 		ann.anchor = rect;
+		ann.anchorRects = anchorRects;
 		// Either way the old quote must go: it described the previous passage, and
 		// leaving it would let a later re-resolution drag the highlight back.
 		ann.quote = quote;
@@ -466,18 +575,43 @@ export class PdfAnnotationsController {
 	/** Current PDF first; otherwise the first shared member with a non-empty outline. */
 	async sharedOutline(pdfPath: string): Promise<SharedOutlineResult> {
 		const candidates = [pdfPath, ...this.store.sharedMembers(pdfPath).filter((path) => path !== pdfPath)];
+		const manual = this.store.manualOutlineForFile(pdfPath);
 		let firstError: string | undefined;
 		for (const path of candidates) {
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (!isPdf(file)) continue;
 			try {
 				const items = await this.outlineReader.read(file);
-				if (outlineHasDestination(items)) return { sourcePath: path, items };
+				if (outlineHasDestination(items)) return { sourcePath: path, items: combineOutlines(items, manual), hasManual: manual.length > 0 };
 			} catch (error) {
 				firstError ??= String(error instanceof Error ? error.message : error);
 			}
 		}
-		return { sourcePath: null, items: [], error: firstError };
+		return {
+			sourcePath: manual.length > 0 ? pdfPath : null,
+			items: combineOutlines([], manual),
+			hasManual: manual.length > 0,
+			error: firstError,
+		};
+	}
+
+	openManualOutlineEditor(pdfPath?: string, entry?: ManualOutlineEntry): void {
+		const path = pdfPath ?? this.currentPdfTarget()?.path;
+		if (!path) return;
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (!isPdf(file)) return;
+		const view = this.app.workspace.getLeavesOfType("pdf")
+			.find((leaf) => (leaf.view as FileView).file?.path === path)?.view as FileView | undefined;
+		const pageInfo = view ? currentPdfPageInfo(view) : null;
+		new ManualOutlineModal(this.app, entry ?? null, pageInfo?.page ?? 1, pageInfo?.count ?? null, (next) => {
+			if (!isPdf(this.app.vault.getAbstractFileByPath(path))) return;
+			this.store.upsertManualOutline(path, next);
+			this.refreshNativeOutlines();
+		}).open();
+	}
+
+	removeManualOutline(pdfPath: string, id: string): void {
+		if (this.store.removeManualOutline(pdfPath, id)) this.refreshNativeOutlines();
 	}
 
 	/**
@@ -890,14 +1024,40 @@ export class PdfAnnotationsController {
 		window.setTimeout(() => position(0), 320);
 	}
 
-	private place(pdfPath: string, pageNumber: number, rect: PdfRect, form: NewNoteForm): void {
+	private place(pdfPath: string, pageNumber: number, rect: PdfRect, form: NewNoteForm, quote?: string, anchorRects?: PdfRect[]): void {
 		const ann: PdfAnnotation = {
 			id: makeAnnotationId(),
 			page: pageNumber,
 			anchor: rect,
+			anchorRects,
+			quote,
 			pinned: form.pinned,
 			collapsed: form.collapsed,
 			side: form.side,
+			layerIds: this.activeLayerId ? [this.activeLayerId] : undefined,
+			text: "",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+		this.store.upsert(pdfPath, ann);
+
+		const view = getActivePDFView(this.app);
+		const state = view ? this.states.get(view) : null;
+		if (state) state.layer.rebuild(pdfPath, state.pages);
+	}
+
+	private placeMark(pdfPath: string, pageNumber: number, rect: PdfRect, quote?: string, anchorRects?: PdfRect[], colorKey?: string): void {
+		const ann: PdfAnnotation = {
+			id: makeAnnotationId(),
+			page: pageNumber,
+			anchor: rect,
+			anchorRects,
+			markOnly: true,
+			quote,
+			colorKey,
+			pinned: false,
+			collapsed: true,
+			side: "right",
 			layerIds: this.activeLayerId ? [this.activeLayerId] : undefined,
 			text: "",
 			createdAt: Date.now(),
@@ -984,16 +1144,24 @@ export class PdfAnnotationsController {
 			const file = view.file;
 			if (!(file instanceof TFile)) return null;
 			if (file.path !== lastPath) {
+				this.closePendingMarkPopover(view);
 				pages.clear();
 				lastPath = file.path;
 			}
 			return file.path;
 		};
 
-		const outlineBridge = new NativeOutlineBridge(view, component, currentPath, (path) => this.sharedOutline(path));
+		const outlineBridge = new NativeOutlineBridge(
+			view,
+			component,
+			currentPath,
+			(path) => this.sharedOutline(path),
+			(path) => this.store.manualOutlineForFile(path).length > 0
+		);
 		const state: ViewState = { pages, layer, currentPath, outlineBridge };
 		this.states.set(view, state);
 		component.register(() => layer.destroy());
+		component.register(() => this.closePendingMarkPopover(view));
 		this.attachUndoKeys(view, component);
 		onScaleChanging(view, component, () => layer.beginZoom());
 
@@ -1016,7 +1184,9 @@ export class PdfAnnotationsController {
 					const pending = this.pendingPlacement;
 					this.pendingPlacement = null;
 					const p = currentPath();
-					if (pending && p) this.place(p, pageNumber, rect, pending);
+					if (!pending || !p) return;
+					if (pending.kind === "mark") this.showMarkPalette(p, pageNumber, pageView, rect, undefined, undefined, view);
+					else this.place(p, pageNumber, rect, pending.form);
 				});
 				component.register(detach);
 			}

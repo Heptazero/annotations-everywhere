@@ -33,7 +33,7 @@ export function filterAnnotations(annotations: PdfAnnotation[], query: string): 
 	if (search.pages.length === 0 && search.terms.length === 0) return annotations;
 	return annotations.filter((annotation) => {
 		if (search.pages.some((page) => page !== annotation.page)) return false;
-		const text = normalize(annotation.text);
+		const text = normalize(`${annotation.text}\n${annotation.quote ?? ""}`);
 		return search.terms.every((term) => text.includes(term));
 	});
 }

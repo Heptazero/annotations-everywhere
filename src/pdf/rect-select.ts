@@ -57,11 +57,11 @@ export function attachRectSelectListener(
 				return;
 			}
 
-			// Screen-space min-X/max-Y is the PDF-space bottom-left corner (PDF y grows
-			// upward, screen y grows downward) — see pdf-layer.ts's PdfRect convention.
-			const [x0, y0] = screenToPdfPoint(pageView, Math.min(startX, up.clientX), Math.max(startY, up.clientY));
-			const [x1, y1] = screenToPdfPoint(pageView, Math.max(startX, up.clientX), Math.min(startY, up.clientY));
-			onComplete([x0, y0, x1, y1]);
+			// Convert the opposite corners, then normalize: on a rotated PDF the
+			// screen's bottom-left is not necessarily the PDF's bottom-left.
+			const [ax, ay] = screenToPdfPoint(pageView, Math.min(startX, up.clientX), Math.max(startY, up.clientY));
+			const [bx, by] = screenToPdfPoint(pageView, Math.max(startX, up.clientX), Math.min(startY, up.clientY));
+			onComplete([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
 		};
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onUp, { once: true });

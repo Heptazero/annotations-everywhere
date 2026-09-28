@@ -132,7 +132,7 @@ const persisted = JSON.parse(disk.get("annotations.json") ?? "{}") as {
 	version?: number;
 	pdfAnnotations?: Record<string, Array<Record<string, unknown>>>;
 };
-assert.equal(persisted.version, 9);
+assert.equal(persisted.version, 10);
 assert.equal(persisted.pdfAnnotations?.["a.pdf"].some((item) => "color" in item), false);
 
 console.log("color-slots: 6 cases passed");

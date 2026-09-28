@@ -13,4 +13,10 @@ const result = await esbuild.build({
 });
 
 const source = result.outputFiles[0].text;
-await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+try {
+	await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+} catch (error) {
+	// An uncaught data: URL stack dumps the entire bundled test suite as base64.
+	console.error(error instanceof Error ? `${error.name}: ${error.message}` : error);
+	process.exitCode = 1;
+}
