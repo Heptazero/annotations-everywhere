@@ -6,6 +6,7 @@ import {
 	type AnnotationColorSlot,
 } from "./annotation-settings";
 import { normalizeAnnotation, type PdfAnnotation } from "./annotation-types";
+import type { AnnotationSelectionRef, AnnotationTransferMode } from "./annotation-batch";
 import {
 	annotationListsConflict,
 	detachDeletedFile,
@@ -640,6 +641,11 @@ export class PdfAnnotationStore {
 		return sharedKey({ pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes }, p);
 	}
 
+	/** Whether two PDF paths currently resolve to the same underlying annotation bucket. */
+	sameAnnotationBucket(a: string, b: string): boolean {
+		return this.key(a) === this.key(b);
+	}
+
 	/** All files in the same shared group, including `pdfPath` itself. */
 	sharedMembers(pdfPath: string): string[] {
 		return groupMembers(this.pairs, normalizePath(pdfPath));
@@ -991,6 +997,72 @@ export class PdfAnnotationStore {
 
 	forFile(pdfPath: string): PdfAnnotation[] {
 		return (this.data[this.key(pdfPath)] ?? []).map(cloneAnnotation);
+	}
+
+	/** Deletes a cross-document selection as one undoable, persisted operation. */
+	deleteAnnotations(refs: readonly AnnotationSelectionRef[]): number {
+		const idsByBucket = new Map<string, Set<string>>();
+		for (const ref of refs) {
+			const bucket = this.key(ref.pdfPath);
+			const ids = idsByBucket.get(bucket) ?? new Set<string>();
+			ids.add(ref.id);
+			idsByBucket.set(bucket, ids);
+		}
+
+		let removed = 0;
+		for (const [bucket, ids] of idsByBucket) {
+			removed += (this.data[bucket] ?? []).filter((annotation) => ids.has(annotation.id)).length;
+		}
+		if (removed === 0) return 0;
+
+		this.pushHistory();
+		for (const [bucket, ids] of idsByBucket) {
+			const next = (this.data[bucket] ?? []).filter((annotation) => !ids.has(annotation.id));
+			if (next.length > 0) this.data[bucket] = next;
+			else delete this.data[bucket];
+		}
+		this.save();
+		this.notify();
+		return removed;
+	}
+
+	/** Applies a prepared copy/move without exposing an intermediate half-moved state. */
+	applyAnnotationTransfer(
+		sourcePath: string,
+		targetPath: string,
+		sourceIds: readonly string[],
+		annotations: readonly PdfAnnotation[],
+		mode: AnnotationTransferMode
+	): number {
+		const sourceKey = this.key(sourcePath);
+		const targetKey = this.key(targetPath);
+		if (sourceKey === targetKey) throw new Error("来源与目标属于同一个共享批注组，无需复制或移动");
+
+		const sourceIdSet = new Set(sourceIds);
+		const source = this.data[sourceKey] ?? [];
+		const selectedCount = source.filter((annotation) => sourceIdSet.has(annotation.id)).length;
+		if (selectedCount !== sourceIdSet.size || annotations.length !== sourceIdSet.size) {
+			throw new Error("所选批注已经变化，请回到批注管理页重新选择");
+		}
+		const occupiedIds = new Set((this.data[targetKey] ?? []).map((annotation) => annotation.id));
+		for (const annotation of annotations) {
+			if (occupiedIds.has(annotation.id)) throw new Error("目标中出现重复批注 ID，操作已取消");
+			occupiedIds.add(annotation.id);
+		}
+
+		this.pushHistory();
+		const target = (this.data[targetKey] ??= []);
+		for (const annotation of annotations) {
+			target.push(cloneAnnotation(annotation));
+		}
+		if (mode === "move") {
+			const remaining = source.filter((annotation) => !sourceIdSet.has(annotation.id));
+			if (remaining.length > 0) this.data[sourceKey] = remaining;
+			else delete this.data[sourceKey];
+		}
+		this.save();
+		this.notify();
+		return annotations.length;
 	}
 
 	/**

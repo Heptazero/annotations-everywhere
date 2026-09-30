@@ -6,6 +6,7 @@ import { scanFootnotes } from "./footnote-scan";
 import { normalizeMarkdownMarginSettings, type MarkdownMarginSettings } from "./markdown-margin-settings";
 import { patchPluginData } from "./plugin-data";
 import { ANNOTATION_LIST_VIEW, AnnotationListView } from "./pdf/annotation-list-view";
+import { ANNOTATION_MANAGER_VIEW, AnnotationManagerView } from "./pdf/annotation-manager-view";
 import { PdfAnnotationSettingTab } from "./pdf/annotation-settings-tab";
 import { PdfAnnotationsController, type NewNoteForm } from "./pdf/controller";
 import { PairPickerModal } from "./pdf/pair-picker";
@@ -145,6 +146,7 @@ export default class MarginNotesPlugin extends Plugin {
 		});
 
 		this.registerView(ANNOTATION_LIST_VIEW, (leaf) => new AnnotationListView(leaf, this.pdfAnnotations));
+		this.registerView(ANNOTATION_MANAGER_VIEW, (leaf) => new AnnotationManagerView(leaf, this.pdfAnnotations));
 		this.addCommand({
 			id: "pdf-open-annotation-list",
 			name: "[PDF] 打开批注列表面板",
@@ -152,8 +154,8 @@ export default class MarginNotesPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "pdf-show-all-annotation-status",
-			name: "[PDF] 查看全库批注状态",
-			callback: () => this.pdfAnnotations.openAnnotationStatusPicker(),
+			name: "[PDF] 打开全库批注管理",
+			callback: () => void this.openAnnotationManager(),
 		});
 		this.addCommand({
 			id: "pdf-migrate-annotation-revisions",
@@ -227,6 +229,7 @@ export default class MarginNotesPlugin extends Plugin {
 			},
 		});
 		this.addRibbonIcon("message-square", "PDF 批注列表", () => void this.openAnnotationList());
+		this.addRibbonIcon("list-checks", "PDF 批注管理", () => void this.openAnnotationManager());
 	}
 
 	private saveMarkdownMargin(value: MarkdownMarginSettings): void {
@@ -266,6 +269,19 @@ export default class MarginNotesPlugin extends Plugin {
 			if (action === "search") leaf.view.focusSearch();
 			else if (action === "outline") leaf.view.showOutline();
 		}
+	}
+
+	/** Opens the global manager as a normal workspace page, reusing it when present. */
+	private async openAnnotationManager(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(ANNOTATION_MANAGER_VIEW);
+		let leaf: WorkspaceLeaf;
+		if (existing.length > 0) {
+			leaf = existing[0];
+		} else {
+			leaf = this.app.workspace.getLeaf("tab");
+			await leaf.setViewState({ type: ANNOTATION_MANAGER_VIEW, active: true });
+		}
+		await this.app.workspace.revealLeaf(leaf);
 	}
 
 	/**

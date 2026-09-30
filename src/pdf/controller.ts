@@ -6,8 +6,13 @@ import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./an
 import { AnnotationLayerPicker } from "./annotation-layer-picker";
 import { compatibleRecoverySources, type OrphanedAnnotationSource } from "./annotation-recovery";
 import { AnnotationRecoveryPicker } from "./annotation-recovery-picker";
-import { AnnotationStatusPicker } from "./annotation-status-picker";
 import type { AnnotationStatusSummary } from "./annotation-status";
+import {
+	prepareAnnotationTransfer,
+	type AnnotationSelectionRef,
+	type AnnotationTransferMode,
+	type PageRangeMapping,
+} from "./annotation-batch";
 import {
 	applyPdfAnnotationStyleSettings,
 	clearPdfAnnotationStyleSettings,
@@ -401,34 +406,63 @@ export class PdfAnnotationsController {
 		return !!file && this.store.isPaired(file.path);
 	}
 
-	/** Opens a searchable overview of every non-empty annotation bucket. */
-	openAnnotationStatusPicker(): void {
+	/** Deduplicated global overview; a shared group appears only once. */
+	annotationStatusSummaries(): AnnotationStatusSummary[] {
 		const existingPaths = new Set(
 			this.app.vault
 				.getFiles()
 				.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
 				.map((candidate) => candidate.path)
 		);
-		const summaries = this.store.annotationStatusSummaries(existingPaths);
-		if (summaries.length === 0) {
-			new Notice("还没有 PDF 批注");
-			return;
-		}
-		new AnnotationStatusPicker(this.app, summaries, (summary) => this.openAnnotationStatus(summary)).open();
+		return this.store.annotationStatusSummaries(existingPaths);
 	}
 
-	private openAnnotationStatus(summary: AnnotationStatusSummary): void {
-		const target = summary.livePaths[0];
-		if (!target) {
-			new Notice("这组批注未挂载到现存 PDF；打开目标 PDF 后运行「恢复未挂载批注」");
-			return;
+	/** Every live PDF except paths resolving to the selected source bucket. */
+	annotationTransferTargets(sourcePath: string): string[] {
+		return this.app.vault.getFiles()
+			.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
+			.map((candidate) => candidate.path)
+			.filter((path) => !this.store.sameAnnotationBucket(sourcePath, path))
+			.sort((a, b) => a.localeCompare(b, "zh-CN"));
+	}
+
+	deleteAnnotations(refs: readonly AnnotationSelectionRef[]): number {
+		if (this.store.waitingForRevisionFiles) throw new Error("批注数据仍在等待同步，暂不能批量删除");
+		return this.store.deleteAnnotations(refs);
+	}
+
+	async transferAnnotations(
+		sourcePath: string,
+		annotationIds: readonly string[],
+		targetPath: string,
+		mode: AnnotationTransferMode,
+		mappings: readonly PageRangeMapping[]
+	): Promise<number> {
+		if (this.store.waitingForRevisionFiles) throw new Error("批注数据仍在等待同步，暂不能复制或移动");
+		if (this.store.sameAnnotationBucket(sourcePath, targetPath)) {
+			throw new Error("来源与目标属于同一个共享批注组");
 		}
-		const file = this.app.vault.getAbstractFileByPath(target);
-		if (!isPdf(file)) {
-			new Notice("代表 PDF 已不存在，请先恢复文件或运行「恢复未挂载批注」");
-			return;
-		}
-		void this.app.workspace.getLeaf(false).openFile(file);
+		const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
+		const targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+		if (!isPdf(sourceFile)) throw new Error("来源 PDF 已不存在，无法换算批注位置");
+		if (!isPdf(targetFile)) throw new Error("目标 PDF 已不存在");
+
+		const [sourceLayout, targetLayout] = await Promise.all([
+			readPdfLayout(this.app, sourceFile),
+			readPdfLayout(this.app, targetFile),
+		]);
+		if (!sourceLayout || !targetLayout) throw new Error("无法读取来源或目标 PDF 的页面尺寸");
+		const ids = new Set(annotationIds);
+		const annotations = this.store.forFile(sourcePath).filter((annotation) => ids.has(annotation.id));
+		if (annotations.length !== ids.size) throw new Error("所选批注已经变化，请重新选择");
+		const prepared = prepareAnnotationTransfer(annotations, mappings, sourceLayout, targetLayout, Date.now());
+		return this.store.applyAnnotationTransfer(
+			sourcePath,
+			targetPath,
+			prepared.sourceIds,
+			prepared.annotations,
+			mode
+		);
 	}
 
 	/**
@@ -1037,7 +1071,7 @@ export class PdfAnnotationsController {
 	 * per-view persisted state (`{file, subpath}` isn't a key it understands for
 	 * FileView), which is why this silently did nothing before.
 	 */
-	async revealAnnotation(pdfPath: string, ann: PdfAnnotation): Promise<void> {
+	async revealAnnotation(pdfPath: string, ann: PdfAnnotation, keepSourceView = false): Promise<void> {
 		const existing = this.app.workspace
 			.getLeavesOfType("pdf")
 			.find((l) => (l.view as FileView).file?.path === pdfPath);
@@ -1045,7 +1079,7 @@ export class PdfAnnotationsController {
 			this.app.workspace.setActiveLeaf(existing, { focus: true });
 			existing.view.setEphemeralState({ subpath: `#page=${ann.page}` });
 		} else {
-			await this.app.workspace.openLinkText(`${pdfPath}#page=${ann.page}`, "", false);
+			await this.app.workspace.openLinkText(`${pdfPath}#page=${ann.page}`, "", keepSourceView);
 		}
 
 		// Give pdf.js a beat to render the target page before looking for the element.

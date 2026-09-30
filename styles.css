@@ -1368,3 +1368,389 @@
 		min-height: 44px;
 	}
 }
+
+/* Global annotation manager: a full workspace page, separate from the current-PDF sidebar. */
+.margin-notes-manager {
+	--manager-row-border: color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+	box-sizing: border-box;
+	padding: clamp(14px, 3vw, 34px);
+	background: var(--background-primary);
+}
+
+.margin-notes-manager-header,
+.margin-notes-manager-toolbar,
+.margin-notes-manager-selection-bar,
+.margin-notes-manager-groups {
+	width: min(1120px, 100%);
+	margin-inline: auto;
+}
+
+.margin-notes-manager-header h2 {
+	margin: 0;
+	font-size: var(--h2-size);
+}
+
+.margin-notes-manager-summary {
+	margin-top: 4px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.margin-notes-manager-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-top: 18px;
+}
+
+.margin-notes-manager-search {
+	position: relative;
+	flex: 1 1 360px;
+	min-width: 180px;
+}
+
+.margin-notes-manager-search-icon {
+	position: absolute;
+	top: 50%;
+	left: 10px;
+	display: flex;
+	width: 16px;
+	height: 16px;
+	transform: translateY(-50%);
+	color: var(--text-muted);
+	pointer-events: none;
+}
+
+.margin-notes-manager-search input {
+	box-sizing: border-box;
+	width: 100%;
+	height: 36px;
+	padding-left: 34px;
+}
+
+.margin-notes-manager-segments {
+	display: inline-flex;
+	align-items: stretch;
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+}
+
+.margin-notes-manager-segments button {
+	min-height: 30px;
+	padding: 3px 10px;
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-muted);
+}
+
+.margin-notes-manager-segments button[aria-pressed="true"] {
+	background: var(--background-primary);
+	color: var(--text-normal);
+	box-shadow: var(--shadow-s);
+}
+
+.margin-notes-manager-selection-bar {
+	position: sticky;
+	top: 0;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	box-sizing: border-box;
+	min-height: 48px;
+	margin-top: 12px;
+	padding: 7px 10px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-m);
+	background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+	backdrop-filter: blur(12px);
+}
+
+.margin-notes-manager-selection-bar.is-active {
+	border-color: var(--background-modifier-border);
+	background: color-mix(in srgb, var(--background-secondary) 94%, transparent);
+}
+
+.margin-notes-manager-selection-count {
+	flex: 1 1 auto;
+	min-width: 130px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.margin-notes-manager-selection-bar.is-active .margin-notes-manager-selection-count {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+.margin-notes-manager-groups {
+	display: grid;
+	gap: 12px;
+	padding: 4px 0 28px;
+}
+
+.margin-notes-manager-group {
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-l);
+	background: var(--background-secondary-alt);
+}
+
+.margin-notes-manager-group-header {
+	display: grid;
+	grid-template-columns: 22px 30px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 8px;
+	min-height: 58px;
+	padding: 8px 12px;
+	background: var(--background-secondary);
+}
+
+.margin-notes-manager-group-header > input,
+.margin-notes-manager-row > input {
+	margin: 0;
+}
+
+.margin-notes-manager-collapse {
+	transition: transform 120ms ease;
+}
+
+.margin-notes-manager-collapse.is-collapsed {
+	transform: rotate(-90deg);
+}
+
+.margin-notes-manager-group-identity,
+.margin-notes-manager-row-content {
+	min-width: 0;
+}
+
+.margin-notes-manager-group-name-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.margin-notes-manager-group-name {
+	overflow: hidden;
+	font-weight: var(--font-semibold);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.margin-notes-manager-status {
+	flex: none;
+	padding: 1px 7px;
+	border-radius: 999px;
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.margin-notes-manager-status.is-shared {
+	background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+	color: var(--interactive-accent);
+}
+
+.margin-notes-manager-status.is-orphaned {
+	background: color-mix(in srgb, var(--text-warning) 15%, transparent);
+	color: var(--text-warning);
+}
+
+.margin-notes-manager-group-path,
+.margin-notes-manager-members {
+	overflow: hidden;
+	margin-top: 2px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.margin-notes-manager-members {
+	color: var(--text-faint);
+}
+
+.margin-notes-manager-group-count {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	white-space: nowrap;
+}
+
+.margin-notes-manager-group-stats {
+	display: grid;
+	justify-items: end;
+	gap: 2px;
+}
+
+.margin-notes-manager-group-updated {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.margin-notes-manager-row {
+	display: grid;
+	grid-template-columns: 22px 48px 12px minmax(120px, 1fr) 108px 32px;
+	align-items: center;
+	gap: 10px;
+	min-height: 52px;
+	padding: 7px 12px;
+	border-top: 1px solid var(--manager-row-border);
+	cursor: pointer;
+}
+
+.margin-notes-manager-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.margin-notes-manager-page,
+.margin-notes-manager-updated {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.margin-notes-manager-color {
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--annotation-color);
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--annotation-color) 50%, var(--background-modifier-border));
+}
+
+.margin-notes-manager-excerpt,
+.margin-notes-manager-quote {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.margin-notes-manager-excerpt {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.margin-notes-manager-quote {
+	margin-top: 2px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.margin-notes-manager-empty {
+	padding: 56px 18px;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: var(--radius-l);
+	color: var(--text-muted);
+	text-align: center;
+}
+
+.margin-notes-manager-transfer-modal .margin-notes-manager-segments {
+	margin-bottom: 12px;
+}
+
+.margin-notes-manager-mapping-title {
+	margin: 16px 0 7px;
+}
+
+.margin-notes-manager-mapping-hint {
+	margin: -2px 0 8px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.margin-notes-manager-mappings {
+	display: grid;
+	gap: 7px;
+}
+
+.margin-notes-manager-mapping-row {
+	display: grid;
+	grid-template-columns: minmax(54px, 1fr) auto minmax(54px, 1fr) auto minmax(54px, 1fr) 34px;
+	align-items: center;
+	gap: 6px;
+}
+
+.margin-notes-manager-mapping-row input {
+	width: 100%;
+	min-width: 0;
+}
+
+.margin-notes-manager-add-mapping {
+	margin-top: 8px;
+}
+
+.margin-notes-manager-form-error {
+	min-height: 1.5em;
+	margin-top: 8px;
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+@media (max-width: 700px) {
+	.margin-notes-manager {
+		padding: 12px 8px 24px;
+	}
+
+	.margin-notes-manager-toolbar {
+		align-items: stretch;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.margin-notes-manager-search {
+		flex-basis: auto;
+	}
+
+	.margin-notes-manager-toolbar .margin-notes-manager-segments {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+	}
+
+	.margin-notes-manager-selection-bar {
+		flex-wrap: wrap;
+	}
+
+	.margin-notes-manager-selection-count {
+		flex-basis: 100%;
+	}
+
+	.margin-notes-manager-group-header {
+		padding-inline: 8px;
+	}
+
+	.margin-notes-manager-row {
+		grid-template-columns: 22px 42px 10px minmax(0, 1fr) 32px;
+		gap: 7px;
+		padding-inline: 8px;
+	}
+
+	.margin-notes-manager-updated {
+		display: none;
+	}
+
+	.margin-notes-manager-group-path,
+	.margin-notes-manager-members {
+		white-space: normal;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+	}
+}
+
+@media (pointer: coarse) {
+	.margin-notes-manager button,
+	.margin-notes-manager input[type="search"],
+	.margin-notes-manager-transfer-modal button,
+	.margin-notes-manager-transfer-modal input {
+		min-height: 44px;
+	}
+
+	.margin-notes-manager-row,
+	.margin-notes-manager-group-header {
+		min-height: 58px;
+	}
+}
