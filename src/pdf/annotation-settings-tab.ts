@@ -8,12 +8,15 @@ import {
 } from "./annotation-settings";
 import { makeAnnotationLayerId } from "./annotation-layers";
 import { resolveDataFilePath } from "./annotation-store";
+import { FolderPathSuggest } from "./folder-path-suggest";
 import type { PdfAnnotationsController } from "./controller";
 import { LayerDeleteModal } from "./layer-delete-modal";
 import { AnnotationPropertySyncModal } from "./annotation-property-sync-modal";
 import { normalizeAnnotationPropertyName } from "./source-annotation-sync";
 
 export class PdfAnnotationSettingTab extends PluginSettingTab {
+	private folderPathSuggest: FolderPathSuggest | null = null;
+
 	constructor(
 		app: App,
 		plugin: Plugin,
@@ -24,6 +27,8 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
+		this.folderPathSuggest?.close();
+		this.folderPathSuggest = null;
 		containerEl.empty();
 
 		const settings: PdfAnnotationSettings = {
@@ -34,27 +39,66 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		const commit = () => void this.controller.saveSettings(settings);
 
 		containerEl.createEl("h3", { text: "批注数据" });
+		let pendingDataPath = settings.dataPath;
 
 		const pathSetting = new Setting(containerEl)
 			.setName("批注存放位置")
 			.setDesc(
-				"库内相对路径。填文件夹就在里面放 annotations.json,填以 .json 结尾的路径就用这个文件。" +
-					"放在库里(而不是插件目录)才能跟着 git / Obsidian Sync / iCloud 同步——本库的 .gitignore 排除了整个 .obsidian/plugins/。"
+				"搜索并选择库内文件夹，也可以填写新文件夹路径；电脑和手机须一致。" +
+					"插件会在其中存放 annotations.json，点击「应用位置」后才更改。"
 			)
-			.addText((t) =>
+			.setClass("margin-notes-pdf-data-path-setting")
+			.addText((t) => {
 				t
 					.setPlaceholder(DEFAULT_PDF_ANNOTATION_SETTINGS.dataPath)
 					.setValue(settings.dataPath)
 					.onChange((v) => {
-						const next = v.trim();
-						if (!next) return;
-						settings.dataPath = next;
-						commit();
-						resolved.setText(`实际文件:${resolveDataFilePath(next)}`);
-					})
-			);
+						pendingDataPath = v.trim();
+						resolved.setText(pendingDataPath
+							? `待应用：${resolveDataFilePath(pendingDataPath)}`
+							: "请输入文件夹路径");
+					});
+				t.inputEl.setAttribute("aria-label", "搜索库内文件夹路径");
+				this.folderPathSuggest = new FolderPathSuggest(this.app, t.inputEl, settings.dataPath, (path) => {
+					pendingDataPath = path;
+					resolved.setText(`待应用：${resolveDataFilePath(path)}`);
+				});
+			})
+			.addButton((button) => button.setButtonText("应用位置").onClick(async () => {
+				if (!pendingDataPath) {
+					new Notice("请输入库内文件夹路径");
+					return;
+				}
+				if (pendingDataPath.toLowerCase().endsWith(".json") && pendingDataPath !== settings.dataPath) {
+					new Notice("请填写文件夹路径，不要填写 annotations.json 文件名");
+					return;
+				}
+				if (/^(?:\/|[A-Za-z]:[\\/])/.test(pendingDataPath) || pendingDataPath.split(/[\\/]/).includes("..")) {
+					new Notice("请填写库内相对文件夹路径");
+					return;
+				}
+				const previous = settings.dataPath;
+				settings.dataPath = pendingDataPath;
+				try {
+					await this.controller.saveSettings(settings);
+					resolved.setText(`实际文件：${this.controller.store.filePath}`);
+					await refreshDataStatus();
+				} catch (error) {
+					settings.dataPath = previous;
+					new Notice(`批注位置未更改：${String(error instanceof Error ? error.message : error)}`);
+				}
+			}));
 		const resolved = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
-		resolved.setText(`实际文件:${this.controller.store.filePath}`);
+		resolved.setText(`实际文件：${this.controller.store.filePath}`);
+		const dataStatus = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
+		const refreshDataStatus = async (): Promise<void> => {
+			const path = this.controller.store.filePath;
+			const exists = await this.app.vault.adapter.exists(path);
+			dataStatus.setText(exists
+				? `数据文件已找到；已载入 ${this.controller.store.totalAnnotationCount} 条批注`
+				: "数据文件尚未同步到此设备；请检查同步后重新打开设置");
+		};
+		void refreshDataStatus();
 
 		const previewSync = (enableAfterConfirm: boolean): void => {
 			const property = normalizeAnnotationPropertyName(settings.annotationPropertyName);
@@ -440,5 +484,11 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				commit();
 			})
 		);
+	}
+
+	hide(): void {
+		this.folderPathSuggest?.close();
+		this.folderPathSuggest = null;
+		super.hide();
 	}
 }

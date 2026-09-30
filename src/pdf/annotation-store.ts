@@ -50,6 +50,8 @@ interface FileRevision {
 }
 
 const FILE_NAME = "annotations.json";
+const PREVIOUS_DEFAULT_FILE = ".margin-notes-hz/annotations.json";
+const PORTABLE_DEFAULT_FILE = "99_assets/plugin-data/margin-note/annotations.json";
 
 /**
  * Resolves the user's configured path to an actual file path. A value ending in
@@ -98,7 +100,8 @@ export class PdfAnnotationStore {
 	private migratedLegacyGroups = 0;
 	private path = "";
 	private listeners = new Set<StoreListener>();
-	private save = debounce(() => void this.flush(), 500, true);
+	private editedSinceLoad = false;
+	private scheduleSave = debounce(() => void this.flush(), 500, true);
 	/**
 	 * Undo history of whole-annotation-map snapshots.
 	 *
@@ -123,6 +126,15 @@ export class PdfAnnotationStore {
 
 	get filePath(): string {
 		return this.path;
+	}
+
+	get totalAnnotationCount(): number {
+		return Object.values(this.data).reduce((total, annotations) => total + annotations.length, 0);
+	}
+
+	private save(): void {
+		this.editedSinceLoad = true;
+		this.scheduleSave();
 	}
 
 	get legacyGroupsDowngraded(): number {
@@ -232,7 +244,13 @@ export class PdfAnnotationStore {
 	/** Loads from `configuredPath`, migrating anything left at older locations. */
 	async load(configuredPath: string): Promise<void> {
 		this.path = resolveDataFilePath(configuredPath);
+		this.editedSinceLoad = false;
 		const adapter = this.app.vault.adapter;
+		// Plugin settings may not have reached a second device yet. Only upgrade
+		// the old default when its own file is absent; never override an explicit
+		// custom path or a real file at the old location.
+		if (this.path === PREVIOUS_DEFAULT_FILE && !(await adapter.exists(this.path)) &&
+			(await adapter.exists(PORTABLE_DEFAULT_FILE))) this.path = PORTABLE_DEFAULT_FILE;
 
 		if (await adapter.exists(this.path)) {
 			let parsed: Partial<FileShape>;
@@ -250,7 +268,7 @@ export class PdfAnnotationStore {
 
 		// Older locations, newest first: the default folder used before the path
 		// became configurable, then the plugin's own data.json (v0.2.0).
-		const legacyFile = ".margin-notes-hz/annotations.json";
+		const legacyFile = PREVIOUS_DEFAULT_FILE;
 		if (legacyFile !== this.path && (await adapter.exists(legacyFile))) {
 			try {
 				const parsed = JSON.parse(await adapter.read(legacyFile)) as Partial<FileShape>;
@@ -271,14 +289,66 @@ export class PdfAnnotationStore {
 		}
 	}
 
+	/** A sync client may deliver the vault file after the plugin has started. Never
+	 * replace annotations created locally in this session with a late arrival. */
+	async loadLateSyncedFile(candidatePath = this.path): Promise<boolean> {
+		if (this.editedSinceLoad || this.totalAnnotationCount > 0 || Object.keys(this.pairs).length > 0 ||
+			Object.keys(this.manualOutlines).length > 0) return false;
+		const adapter = this.app.vault.adapter;
+		const portableFallback = this.path === PREVIOUS_DEFAULT_FILE && candidatePath === PORTABLE_DEFAULT_FILE;
+		if (candidatePath !== this.path && !portableFallback) return false;
+		if (portableFallback && (await adapter.exists(this.path))) return false;
+		if (!candidatePath || !(await adapter.exists(candidatePath))) return false;
+		let parsed: Partial<FileShape>;
+		try {
+			parsed = JSON.parse(await adapter.read(candidatePath)) as Partial<FileShape>;
+		} catch {
+			throw new Error(`margin-notes-hz: 同步的批注文件解析失败,请检查 ${candidatePath}`);
+		}
+		if (this.editedSinceLoad || this.totalAnnotationCount > 0) return false;
+		if (!parsed.pdfAnnotations || typeof parsed.pdfAnnotations !== "object") return false;
+		this.path = candidatePath;
+		const migrated = this.adopt(parsed);
+		if (migrated) await this.flush();
+		this.notify();
+		return true;
+	}
+
 	/** Moves the backing file when the configured path changes. */
 	async relocate(configuredPath: string): Promise<void> {
 		const next = resolveDataFilePath(configuredPath);
 		if (next === this.path) return;
 		const oldPath = this.path;
-		this.path = next;
-		await this.flush();
 		const adapter = this.app.vault.adapter;
+		if (await adapter.exists(next)) {
+			// A second device may already have synced the requested file. Switching
+			// an empty session to it is safe; writing that empty session over it is not.
+			if (this.editedSinceLoad || this.totalAnnotationCount > 0 || Object.keys(this.pairs).length > 0 ||
+				Object.keys(this.manualOutlines).length > 0) {
+				throw new Error(`目标位置已有批注文件，未覆盖：${next}`);
+			}
+			let parsed: Partial<FileShape>;
+			try {
+				parsed = JSON.parse(await adapter.read(next)) as Partial<FileShape>;
+			} catch {
+				throw new Error(`目标批注文件解析失败，未覆盖：${next}`);
+			}
+			if (!parsed.pdfAnnotations || typeof parsed.pdfAnnotations !== "object") {
+				throw new Error(`目标不是 Margin Notes 批注文件，未覆盖：${next}`);
+			}
+			this.path = next;
+			const migrated = this.adopt(parsed);
+			if (migrated) await this.flush();
+			this.notify();
+			return;
+		}
+		this.path = next;
+		try {
+			await this.flush();
+		} catch (error) {
+			this.path = oldPath;
+			throw error;
+		}
 		if (oldPath && (await adapter.exists(oldPath))) await adapter.remove(oldPath);
 	}
 

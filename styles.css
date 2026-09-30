@@ -1160,6 +1160,27 @@
 
 /* This arrow pair sits before the label to keep the right-aligned fields even;
    it is a local alignment choice, not a rule that sorting belongs on the left. */
+.margin-notes-pdf-data-path-setting .setting-item-control {
+	flex-wrap: wrap;
+}
+.margin-notes-pdf-data-path-setting input {
+	min-width: min(18rem, 100%);
+	flex: 1 1 18rem;
+}
+@media (max-width: 600px) {
+	.margin-notes-pdf-data-path-setting {
+		display: block;
+	}
+	.margin-notes-pdf-data-path-setting .setting-item-control {
+		width: 100%;
+		margin-top: 8px;
+	}
+	.margin-notes-pdf-data-path-setting input {
+		min-width: 0;
+		flex-basis: 100%;
+	}
+}
+
 .margin-notes-pdf-palette-settings .setting-item-name {
 	display: flex;
 	align-items: center;

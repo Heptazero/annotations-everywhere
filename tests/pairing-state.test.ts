@@ -8,6 +8,8 @@ import "./manual-outline.test";
 import "./pdf-layout.test";
 import "./editor-key-scope.test";
 import "./source-annotation-sync.test";
+import "./annotation-sync.test";
+import "./folder-path-search.test";
 import { TFile } from "obsidian";
 import { PdfAnnotationStore } from "../src/pdf/annotation-store";
 import { normalizeAnnotation } from "../src/pdf/annotation-types";

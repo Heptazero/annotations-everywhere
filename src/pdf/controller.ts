@@ -16,7 +16,7 @@ import {
 	type PdfAnnotationSettings,
 } from "./annotation-settings";
 import { HighlightModePicker } from "./highlight-mode-picker";
-import { PdfAnnotationStore } from "./annotation-store";
+import { PdfAnnotationStore, resolveDataFilePath } from "./annotation-store";
 import { makeAnnotationId, type MarginSide, type PdfAnnotation } from "./annotation-types";
 import { openMarkPopover, type MarkPopoverHandle } from "./mark-popover";
 import { comparePdfLayouts, largestCompatibleLayoutCluster, readPdfLayout } from "./layout-check";
@@ -84,6 +84,7 @@ export class PdfAnnotationsController {
 	private activeLayerId: string | null = null;
 	private outlineReader: PdfOutlineReader;
 	private layoutRecheckTimers = new Map<string, number>();
+	private lateSyncTimer: number | null = null;
 	private fileLifecycle: SharedFileLifecycle;
 
 	constructor(
@@ -115,6 +116,12 @@ export class PdfAnnotationsController {
 			new Notice(String(e instanceof Error ? e.message : e));
 			throw e;
 		}
+		if (resolveDataFilePath(this.settings.dataPath) !== this.store.filePath) {
+			this.settings = {
+				...this.settings,
+				dataPath: this.store.filePath.slice(0, this.store.filePath.lastIndexOf("/")),
+			};
+		}
 		this.store.migrateColorKeys(this.settings.palette);
 		// Persist the normalized object palette even when every legacy literal
 		// matched an existing slot. This removes the old string[] settings shape,
@@ -136,6 +143,32 @@ export class PdfAnnotationsController {
 			this.rebuildAll();
 			this.annotationPropertySync.queue();
 		}));
+		const queueLateSync = (file: { path: string }): void => {
+			const oldDefaultReceivingPortableFile = this.store.filePath === ".margin-notes-hz/annotations.json" &&
+				file.path === resolveDataFilePath(DEFAULT_PDF_ANNOTATION_SETTINGS.dataPath);
+			if (file.path !== this.store.filePath && !oldDefaultReceivingPortableFile) return;
+			if (this.lateSyncTimer !== null) window.clearTimeout(this.lateSyncTimer);
+			this.lateSyncTimer = window.setTimeout(() => {
+				this.lateSyncTimer = null;
+				void this.store.loadLateSyncedFile(file.path).then(async (loaded) => {
+					if (!loaded) return;
+					if (resolveDataFilePath(this.settings.dataPath) !== this.store.filePath) {
+						this.settings = {
+							...this.settings,
+							dataPath: this.store.filePath.slice(0, this.store.filePath.lastIndexOf("/")),
+						};
+						await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
+					}
+					this.store.migrateColorKeys(this.settings.palette);
+					new Notice(`已读取同步批注：${this.store.totalAnnotationCount} 条`);
+				}).catch((error) => new Notice(String(error instanceof Error ? error.message : error)));
+			}, 350);
+		};
+		this.plugin.registerEvent(this.app.vault.on("create", queueLateSync));
+		this.plugin.registerEvent(this.app.vault.on("modify", queueLateSync));
+		this.plugin.register(() => {
+			if (this.lateSyncTimer !== null) window.clearTimeout(this.lateSyncTimer);
+		});
 		this.plugin.registerEvent(this.app.metadataCache.on("changed", (file) => {
 			if (file.extension === "md") this.annotationPropertySync.queue();
 		}));
@@ -166,14 +199,20 @@ export class PdfAnnotationsController {
 	}
 
 	async saveSettings(next: PdfAnnotationSettings): Promise<void> {
+		const previous = this.settings;
 		const pathChanged = next.dataPath !== this.settings.dataPath;
+		await patchPluginData(this.plugin, { pdfAnnotationSettings: next });
+		try {
+			if (pathChanged) await this.store.relocate(next.dataPath);
+		} catch (error) {
+			await patchPluginData(this.plugin, { pdfAnnotationSettings: previous });
+			throw error;
+		}
 		this.settings = next;
 		if (this.activeLayerId && !next.layers.some((layer) => layer.id === this.activeLayerId)) {
 			this.activeLayerId = null;
 		}
 		applyPdfAnnotationStyleSettings(this.settings);
-		await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
-		if (pathChanged) await this.store.relocate(next.dataPath);
 		this.store.notifyAppearanceChanged();
 	}
 
@@ -312,8 +351,14 @@ export class PdfAnnotationsController {
 			this.lastPdfView = active;
 			return active;
 		}
-		const stillOpen = this.app.workspace.getLeavesOfType("pdf").some((l) => l.view === this.lastPdfView);
+		const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+		const stillOpen = pdfLeaves.some((l) => l.view === this.lastPdfView);
 		if (!stillOpen) this.lastPdfView = null;
+		// Mobile can open the side panel as the active leaf before any PDF focus
+		// event has populated lastPdfView. One open PDF is unambiguous.
+		if (!this.lastPdfView && pdfLeaves.length === 1 && pdfLeaves[0].view instanceof FileView) {
+			this.lastPdfView = pdfLeaves[0].view;
+		}
 		return this.lastPdfView;
 	}
 

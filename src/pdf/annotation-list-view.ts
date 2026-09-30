@@ -154,7 +154,13 @@ export class AnnotationListView extends ItemView {
 
 		const anns = this.controller.store.forFile(target.path);
 		if (anns.length === 0) {
-			container.createDiv({ cls: "margin-notes-pdf-list-empty", text: "这份 PDF 还没有批注" });
+			const total = this.controller.store.totalAnnotationCount;
+			container.createDiv({
+				cls: "margin-notes-pdf-list-empty",
+				text: total > 0
+					? `这份 PDF 没有匹配的批注；库中已载入 ${total} 条，请检查文件路径或共享绑定`
+					: "尚未载入批注；请到设置检查批注数据文件是否已同步到此设备",
+			});
 			this.restoreUi(restoreScroll, generation);
 			return;
 		}

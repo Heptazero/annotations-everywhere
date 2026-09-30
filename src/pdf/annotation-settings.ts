@@ -139,7 +139,7 @@ export const DEFAULT_COLOR_SLOTS: AnnotationColorSlot[] = [
 ];
 
 export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
-	dataPath: ".margin-notes-hz",
+	dataPath: "99_assets/plugin-data/margin-note",
 	syncAnnotationProperty: false,
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
 	freeColor: "#7d94ca",
