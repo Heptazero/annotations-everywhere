@@ -5,10 +5,12 @@ import type { PdfAnnotation } from "./annotation-types";
 import type { PdfAnnotationsController } from "./controller";
 import { AnnotationTransferModal, DeleteAnnotationsModal } from "./annotation-batch-modal";
 import type { AnnotationSelectionRef } from "./annotation-batch";
+import { AnnotationFolderSuggest } from "./annotation-folder-suggest";
 
 export const ANNOTATION_MANAGER_VIEW = "margin-notes-hz-annotation-manager";
 
 type StatusFilter = "all" | AnnotationStatusKind;
+type TimeOrder = "newest" | "oldest";
 interface VisibleGroup {
 	summary: AnnotationStatusSummary;
 	annotations: PdfAnnotation[];
@@ -33,13 +35,34 @@ function statusLabel(status: AnnotationStatusKind): string {
 	return "独立";
 }
 
+function groupFolderPaths(groups: VisibleGroup[]): string[] {
+	const folders = new Set<string>();
+	for (const { summary } of groups) {
+		for (const path of summary.memberPaths) {
+			const parts = path.split("/").slice(0, -1);
+			for (let depth = 1; depth <= parts.length; depth++) folders.add(parts.slice(0, depth).join("/"));
+		}
+	}
+	return [...folders].sort((a, b) => {
+		const depth = a.split("/").length - b.split("/").length;
+		return depth || a.localeCompare(b, "zh-CN");
+	});
+}
+
+function groupIsInFolder(summary: AnnotationStatusSummary, folder: string): boolean {
+	return !folder || summary.memberPaths.some((path) => path.startsWith(`${folder}/`));
+}
+
 /** Global, multi-select annotation workspace. The current-PDF sidebar stays intentionally separate. */
 export class AnnotationManagerView extends ItemView {
 	private query = "";
 	private status: StatusFilter = "all";
+	private timeOrder: TimeOrder = "newest";
+	private folderPrefix = "";
 	private selected = new Set<string>();
 	private collapsed = new Set<string>();
 	private searchInput: HTMLInputElement | null = null;
+	private folderSuggest: AnnotationFolderSuggest | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -65,11 +88,26 @@ export class AnnotationManagerView extends ItemView {
 		this.render();
 	}
 
+	async onClose(): Promise<void> {
+		this.folderSuggest?.close();
+		this.folderSuggest = null;
+	}
+
 	private readGroups(): { all: VisibleGroup[]; visible: VisibleGroup[] } {
 		const all = this.controller.annotationStatusSummaries().map((summary) => ({
 			summary,
-			annotations: this.controller.store.forFile(summary.key),
-		}));
+			annotations: this.controller.store.forFile(summary.key).sort((a, b) => {
+				const timeDelta = a.updatedAt - b.updatedAt;
+				if (timeDelta !== 0) return this.timeOrder === "newest" ? -timeDelta : timeDelta;
+				return a.page - b.page || a.id.localeCompare(b.id);
+			}),
+		})).sort((a, b) => {
+			const aTime = a.summary.lastUpdatedAt ?? 0;
+			const bTime = b.summary.lastUpdatedAt ?? 0;
+			const timeDelta = aTime - bTime;
+			if (timeDelta !== 0) return this.timeOrder === "newest" ? -timeDelta : timeDelta;
+			return a.summary.representativePath.localeCompare(b.summary.representativePath, "zh-CN");
+		});
 		const validKeys = new Set(all.flatMap(({ summary, annotations }) =>
 			annotations.map((annotation) => selectionKey(summary.key, annotation.id))));
 		for (const key of this.selected) if (!validKeys.has(key)) this.selected.delete(key);
@@ -77,6 +115,7 @@ export class AnnotationManagerView extends ItemView {
 		const query = this.query.trim().normalize("NFKC").toLocaleLowerCase();
 		const visible = all.flatMap(({ summary, annotations }) => {
 			if (this.status !== "all" && summary.status !== this.status) return [];
+			if (!groupIsInFolder(summary, this.folderPrefix)) return [];
 			if (!query) return [{ summary, annotations }];
 			const groupText = [summary.representativePath, ...summary.memberPaths, statusLabel(summary.status)]
 				.join(" ").normalize("NFKC").toLocaleLowerCase();
@@ -93,6 +132,8 @@ export class AnnotationManagerView extends ItemView {
 		const previousScroll = this.contentEl.scrollTop;
 		const hadSearchFocus = document.activeElement === this.searchInput;
 		const { all, visible } = this.readGroups();
+		this.folderSuggest?.close();
+		this.folderSuggest = null;
 		this.contentEl.empty();
 		this.contentEl.addClass("margin-notes-manager");
 
@@ -100,7 +141,14 @@ export class AnnotationManagerView extends ItemView {
 		const title = header.createDiv();
 		title.createEl("h2", { text: "批注管理" });
 		const total = all.reduce((sum, group) => sum + group.annotations.length, 0);
-		title.createDiv({ cls: "margin-notes-manager-summary", text: `${all.length} 组 PDF · ${total} 条批注` });
+		const visibleTotal = visible.reduce((sum, group) => sum + group.annotations.length, 0);
+		const filtered = this.query.trim() !== "" || this.status !== "all" || this.folderPrefix !== "";
+		title.createDiv({
+			cls: "margin-notes-manager-summary",
+			text: filtered
+				? `${visible.length}/${all.length} 组 PDF · ${visibleTotal}/${total} 条批注`
+				: `${all.length} 组 PDF · ${total} 条批注`,
+		});
 
 		const toolbar = this.contentEl.createDiv("margin-notes-manager-toolbar");
 		const searchWrap = toolbar.createDiv("margin-notes-manager-search");
@@ -113,6 +161,7 @@ export class AnnotationManagerView extends ItemView {
 		});
 		this.searchInput.addEventListener("input", () => {
 			this.query = this.searchInput?.value ?? "";
+			this.contentEl.scrollTop = 0;
 			this.render();
 		});
 
@@ -130,9 +179,78 @@ export class AnnotationManagerView extends ItemView {
 			});
 			button.addEventListener("click", () => {
 				this.status = value;
+				this.contentEl.scrollTop = 0;
 				this.render();
 			});
 		}
+
+		const filterBar = this.contentEl.createDiv("margin-notes-manager-filterbar");
+		const folderCandidates = groupFolderPaths(all);
+		const folderControl = filterBar.createDiv("margin-notes-manager-folder-filter");
+		const folderIcon = folderControl.createSpan("margin-notes-manager-filter-icon");
+		setIcon(folderIcon, "folder");
+		const folderInput = folderControl.createEl("input", {
+			type: "text",
+			value: this.folderPrefix,
+			attr: {
+				placeholder: "全部文件夹",
+				"aria-label": "按文件夹筛选批注",
+				spellcheck: "false",
+			},
+		});
+		this.folderSuggest = new AnnotationFolderSuggest(this.app, folderInput, folderCandidates, (path) => {
+			this.folderPrefix = path;
+			this.contentEl.scrollTop = 0;
+			this.render();
+		});
+		folderInput.addEventListener("blur", () => window.setTimeout(() => {
+			if (folderInput.isConnected && folderInput.value !== this.folderPrefix) folderInput.value = this.folderPrefix;
+		}, 150));
+		if (this.folderPrefix) {
+			const clearFolder = folderControl.createEl("button", {
+				cls: "clickable-icon margin-notes-manager-filter-clear",
+				attr: { type: "button", "aria-label": "清除文件夹筛选", title: "清除文件夹筛选" },
+			});
+			setIcon(clearFolder, "x");
+			clearFolder.addEventListener("click", () => {
+				this.folderPrefix = "";
+				this.contentEl.scrollTop = 0;
+				this.render();
+			});
+		}
+
+		const timeSegments = filterBar.createDiv({
+			cls: "margin-notes-manager-segments margin-notes-manager-time-order",
+			attr: { role: "group", "aria-label": "按修改时间排序" },
+		});
+		const timeOptions: Array<[TimeOrder, string]> = [["newest", "新 → 旧"], ["oldest", "旧 → 新"]];
+		for (const [value, label] of timeOptions) {
+			const button = timeSegments.createEl("button", {
+				text: label,
+				attr: { type: "button", "aria-pressed": String(this.timeOrder === value) },
+			});
+			button.addEventListener("click", () => {
+				this.timeOrder = value;
+				this.contentEl.scrollTop = 0;
+				this.render();
+			});
+		}
+
+		const visibleGroupKeys = visible.map(({ summary }) => summary.key);
+		const allVisibleCollapsed = visibleGroupKeys.length > 0 && visibleGroupKeys.every((key) => this.collapsed.has(key));
+		const collapseAll = filterBar.createEl("button", {
+			cls: "margin-notes-manager-collapse-all",
+			text: allVisibleCollapsed ? "全部展开" : "全部折叠",
+			attr: { type: "button" },
+		});
+		collapseAll.disabled = visibleGroupKeys.length === 0;
+		collapseAll.addEventListener("click", () => {
+			for (const key of visibleGroupKeys) {
+				if (allVisibleCollapsed) this.collapsed.delete(key);
+				else this.collapsed.add(key);
+			}
+			this.render();
+		});
 
 		const visibleKeys = visible.flatMap(({ summary, annotations }) =>
 			annotations.map((annotation) => selectionKey(summary.key, annotation.id)));

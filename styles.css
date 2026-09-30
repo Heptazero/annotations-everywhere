@@ -1379,6 +1379,7 @@
 
 .margin-notes-manager-header,
 .margin-notes-manager-toolbar,
+.margin-notes-manager-filterbar,
 .margin-notes-manager-selection-bar,
 .margin-notes-manager-groups {
 	width: min(1120px, 100%);
@@ -1450,6 +1451,51 @@
 	background: var(--background-primary);
 	color: var(--text-normal);
 	box-shadow: var(--shadow-s);
+}
+
+.margin-notes-manager-filterbar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 10px;
+}
+
+.margin-notes-manager-folder-filter {
+	position: relative;
+	flex: 1 1 420px;
+	min-width: 180px;
+}
+
+.margin-notes-manager-filter-icon {
+	position: absolute;
+	top: 50%;
+	left: 10px;
+	z-index: 1;
+	display: flex;
+	width: 16px;
+	height: 16px;
+	transform: translateY(-50%);
+	color: var(--text-muted);
+	pointer-events: none;
+}
+
+.margin-notes-manager-folder-filter input {
+	box-sizing: border-box;
+	width: 100%;
+	height: 36px;
+	padding: 0 36px 0 34px;
+}
+
+.margin-notes-manager-filter-clear {
+	position: absolute;
+	top: 50%;
+	right: 4px;
+	transform: translateY(-50%);
+}
+
+.margin-notes-manager-time-order,
+.margin-notes-manager-collapse-all {
+	flex: none;
 }
 
 .margin-notes-manager-selection-bar {
@@ -1701,6 +1747,22 @@
 		gap: 8px;
 	}
 
+	.margin-notes-manager-filterbar {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 8px;
+	}
+
+	.margin-notes-manager-folder-filter {
+		grid-column: 1 / -1;
+		min-width: 0;
+	}
+
+	.margin-notes-manager-time-order {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
 	.margin-notes-manager-search {
 		flex-basis: auto;
 	}
@@ -1744,6 +1806,7 @@
 @media (pointer: coarse) {
 	.margin-notes-manager button,
 	.margin-notes-manager input[type="search"],
+	.margin-notes-manager input[type="text"],
 	.margin-notes-manager-transfer-modal button,
 	.margin-notes-manager-transfer-modal input {
 		min-height: 44px;
