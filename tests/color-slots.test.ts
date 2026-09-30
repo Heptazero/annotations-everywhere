@@ -18,7 +18,17 @@ assert.equal(settings.palette[0].id, LEGACY_COLOR_KEY_MAP.general);
 assert.equal(settings.palette[1].id, LEGACY_COLOR_KEY_MAP.concept);
 assert.equal(settings.palette[1].name, "定义与建模");
 assert.equal(settings.dotSize, 12);
+assert.equal(settings.mobileSelectionPalette, false);
 assert.deepEqual(settings.layers.map((layer) => layer.name), ["内心 OS", "论证骨架", "知识查阅"]);
+
+const mobileSelectionSettings = await loadPdfAnnotationSettings({
+	loadData: async () => ({ pdfAnnotationSettings: { mobileSelectionPalette: true } }),
+});
+assert.equal(mobileSelectionSettings.mobileSelectionPalette, true);
+const invalidMobileSelectionSettings = await loadPdfAnnotationSettings({
+	loadData: async () => ({ pdfAnnotationSettings: { mobileSelectionPalette: "true" } }),
+});
+assert.equal(invalidMobileSelectionSettings.mobileSelectionPalette, false);
 
 const dotSizeSettings = await loadPdfAnnotationSettings({
 	loadData: async () => ({ pdfAnnotationSettings: { dotSize: 99 } }),
@@ -135,4 +145,4 @@ const persisted = JSON.parse(disk.get("annotations.json") ?? "{}") as {
 assert.equal(persisted.version, 10);
 assert.equal(persisted.pdfAnnotations?.["a.pdf"].some((item) => "color" in item), false);
 
-console.log("color-slots: 6 cases passed");
+console.log("color-slots/settings: 7 cases passed");

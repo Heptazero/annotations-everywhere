@@ -1,4 +1,4 @@
-import type { App } from "obsidian";
+import { Platform, type App } from "obsidian";
 import type { AnnotationColorSlot } from "./annotation-settings";
 import { beginTextEditorNavigationScope } from "./editor-key-scope";
 
@@ -241,7 +241,11 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	document.addEventListener("scroll", onScroll, true);
 	window.addEventListener("resize", position);
 	const initialConfirm = el.querySelector<HTMLElement>(".margin-notes-pdf-mark-popover-confirm");
-	if (initialConfirm) initialConfirm.querySelector<HTMLButtonElement>("button:last-child")?.focus({ preventScroll: true });
-	else palette.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+	// Focusing a button while the OS selection handles are open can collapse the
+	// selected PDF text on mobile before the user has chosen a colour.
+	if (!Platform.isMobile) {
+		if (initialConfirm) initialConfirm.querySelector<HTMLButtonElement>("button:last-child")?.focus({ preventScroll: true });
+		else palette.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+	}
 	return handle;
 }

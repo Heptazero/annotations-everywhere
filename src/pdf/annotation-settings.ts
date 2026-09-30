@@ -30,6 +30,8 @@ export interface PdfAnnotationSettings {
 	syncAnnotationProperty: boolean;
 	/** Boolean frontmatter key written only as true; absence means no annotations. */
 	annotationPropertyName: string;
+	/** On mobile, offer the existing mark palette after PDF text selection settles. */
+	mobileSelectionPalette: boolean;
 	/** Dot + border colour for free notes. */
 	freeColor: string;
 	/** Dot + border colour for rail notes. */
@@ -142,6 +144,7 @@ export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	dataPath: "99_assets/plugin-data/margin-note",
 	syncAnnotationProperty: false,
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
+	mobileSelectionPalette: false,
 	freeColor: "#7d94ca",
 	railColor: "#eed37c",
 	opacity: 92,
@@ -186,6 +189,7 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 		...raw,
 		syncAnnotationProperty: raw.syncAnnotationProperty === true,
 		annotationPropertyName: normalizeAnnotationPropertyName(raw.annotationPropertyName),
+		mobileSelectionPalette: raw.mobileSelectionPalette === true,
 		railWidthLeft: raw.railWidthLeft ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthLeft,
 		railWidthRight: raw.railWidthRight ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthRight,
 		railGapLeft: raw.railGapLeft ?? legacyGap ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railGapLeft,

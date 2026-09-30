@@ -1,4 +1,4 @@
-import { Component, FileView, Menu, Notice, TFile, type App, type Plugin } from "obsidian";
+import { Component, FileView, Menu, Notice, Platform, TFile, type App, type Plugin } from "obsidian";
 import { patchPluginData } from "../plugin-data";
 import { anchorFromActiveSelection } from "./annotation-anchor";
 import { AnnotationLayer } from "./annotation-layer";
@@ -1185,6 +1185,65 @@ export class PdfAnnotationsController {
 		});
 	}
 
+	/** Mobile text handles emit many selection changes; offer one palette after they settle. */
+	private attachMobileSelectionPalette(view: FileView, component: Component): void {
+		if (!Platform.isMobile) return;
+		let timer: number | null = null;
+		let touching = false;
+		let changedDuringTouch = false;
+		let lastKey: string | null = null;
+		const cancel = () => {
+			if (timer !== null) window.clearTimeout(timer);
+			timer = null;
+		};
+		const schedule = () => {
+			cancel();
+			if (!this.settings.mobileSelectionPalette) return;
+			timer = window.setTimeout(() => {
+				timer = null;
+				if (touching || !view.containerEl.isConnected || !this.settings.mobileSelectionPalette ||
+					this.rectSelect.armed || this.pendingPlacement || this.pendingReanchor || this.pendingMarkPopover ||
+					this.store.waitingForRevisionFiles) return;
+				const selected = anchorFromActiveSelection();
+				if (!selected || selected.view !== view || !selected.pageView.div.isConnected ||
+					selected.file.path !== view.file?.path) return;
+				const quote = window.getSelection()?.toString().trim();
+				if (!quote) return;
+				const key = JSON.stringify([selected.file.path, selected.pageNumber, selected.rect, quote]);
+				if (key === lastKey) return;
+				lastKey = key;
+				this.showMarkPalette(selected.file.path, selected.pageNumber, selected.pageView,
+					selected.rect, quote, selected.rects, view);
+			}, 450);
+		};
+		component.registerDomEvent(document, "selectionchange", () => {
+			const selection = window.getSelection();
+			if (!selection || selection.isCollapsed) {
+				lastKey = null;
+				cancel();
+				return;
+			}
+			if (touching) changedDuringTouch = true;
+			else schedule();
+		});
+		component.registerDomEvent(view.containerEl, "touchstart", () => {
+			touching = true;
+			changedDuringTouch = false;
+			lastKey = null;
+			cancel();
+		});
+		component.registerDomEvent(document, "touchend", () => {
+			touching = false;
+			if (changedDuringTouch) schedule();
+		});
+		component.registerDomEvent(document, "touchcancel", () => {
+			touching = false;
+			changedDuringTouch = false;
+			cancel();
+		});
+		component.register(cancel);
+	}
+
 	private attachPageHandlers(view: FileView): void {
 		const component = new Component();
 		this.plugin.addChild(component);
@@ -1227,6 +1286,7 @@ export class PdfAnnotationsController {
 		component.register(() => layer.destroy());
 		component.register(() => this.closePendingMarkPopover(view));
 		this.attachUndoKeys(view, component);
+		this.attachMobileSelectionPalette(view, component);
 		onScaleChanging(view, component, () => layer.beginZoom());
 
 		const trackedPageDivs = new WeakSet<HTMLDivElement>();

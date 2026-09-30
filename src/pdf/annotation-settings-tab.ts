@@ -108,6 +108,14 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		};
 		void refreshDataStatus();
 
+		new Setting(containerEl)
+			.setName("手机划词后显示勾画颜色")
+			.setDesc("开启后，在手机 PDF 中选中文字并停稳，会直接出现勾画颜色面板；未选颜色不会保存。拖框勾画仍可用原命令。")
+			.addToggle((toggle) => toggle.setValue(settings.mobileSelectionPalette).onChange((value) => {
+				settings.mobileSelectionPalette = value;
+				commit();
+			}));
+
 		const previewSync = (enableAfterConfirm: boolean): void => {
 			const property = normalizeAnnotationPropertyName(settings.annotationPropertyName);
 			settings.annotationPropertyName = property;
