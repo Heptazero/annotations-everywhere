@@ -16,19 +16,24 @@ const payload = (id: string) => JSON.stringify({
 
 function makeStore(initial: Record<string, string> = {}) {
 	const files = new Map(Object.entries(initial));
+	const folders = new Set<string>();
+	const hasFolder = (path: string) => folders.has(path) || [...files.keys()].some((file) => file.startsWith(`${path}/`));
 	const app = { vault: { getAbstractFileByPath: () => null, adapter: {
-		exists: async (path: string) => files.has(path),
+		exists: async (path: string) => files.has(path) || hasFolder(path),
 		read: async (path: string) => {
 			const data = files.get(path);
 			if (data === undefined) throw new Error(`Missing ${path}`);
 			return data;
 		},
 		write: async (path: string, data: string) => { files.set(path, data); },
-		mkdir: async () => undefined,
-		list: async (path: string) => ({
-			files: [...files.keys()].filter((file) => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes("/")),
-			folders: [],
-		}),
+		mkdir: async (path: string) => { folders.add(path); },
+		list: async (path: string) => {
+			if (!hasFolder(path)) throw new Error(`Missing folder ${path}`);
+			return {
+				files: [...files.keys()].filter((file) => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes("/")),
+				folders: [],
+			};
+		},
 		remove: async (path: string) => { files.delete(path); },
 	} } } as unknown as App;
 	const plugin = { loadData: async () => ({}) } as unknown as Plugin;
@@ -127,6 +132,27 @@ function makeStore(initial: Record<string, string> = {}) {
 	assert.deepEqual(reopened.store.forFile("paper.pdf").map((item) => item.id).sort(), ["after", "baseline"]);
 }
 
+// The sync client may deliver a manifest before its record files. Startup must
+// wait safely, then load the complete baseline when the remaining file arrives.
+{
+	const migrated = makeStore({ [dataFile]: payload("baseline") });
+	await migrated.store.load(folder);
+	await migrated.store.migrateToRevisionFiles();
+	const recordPath = [...migrated.files.keys()].find((path) => path.includes("/revisions/records/"));
+	assert.ok(recordPath);
+	const record = migrated.files.get(recordPath);
+	assert.ok(record);
+	migrated.files.delete(recordPath);
+	const receiving = makeStore(Object.fromEntries(migrated.files));
+	await receiving.store.load(folder);
+	assert.equal(receiving.store.waitingForRevisionFiles, true);
+	assert.equal(receiving.store.usesRevisionFiles, false);
+	receiving.files.set(recordPath, record);
+	assert.equal(await receiving.store.loadLateRevisionFiles(), true);
+	assert.equal(receiving.store.waitingForRevisionFiles, false);
+	assert.equal(receiving.store.totalAnnotationCount, 1);
+}
+
 // Shared groups keep one visible annotation bucket when expanded to three PDFs.
 {
 	const { files, store } = makeStore({ [dataFile]: payload("original") });
@@ -155,4 +181,4 @@ function makeStore(initial: Record<string, string> = {}) {
 	await assert.rejects(reopened.store.load(folder), /旧版 annotations.json/);
 }
 
-console.log("annotation-sync: 9 cases passed");
+console.log("annotation-sync: 10 cases passed");

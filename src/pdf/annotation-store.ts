@@ -22,7 +22,7 @@ import {
 import type { OrphanedAnnotationSource } from "./annotation-recovery";
 import { mergeManualOutlines, normalizeManualOutline, type ManualOutlineEntry } from "./manual-outline";
 import { buildAnnotationStatusSummaries, type AnnotationStatusSummary } from "./annotation-status";
-import { AnnotationJournal, journalStatesEqual, type JournalEvent, type JournalState, type JournalView } from "./annotation-journal";
+import { AnnotationJournal, JournalPendingSyncError, journalStatesEqual, type JournalEvent, type JournalState, type JournalView } from "./annotation-journal";
 
 interface FileShape {
 	version: number;
@@ -359,7 +359,16 @@ export class PdfAnnotationStore {
 				return;
 			}
 			const journal = new AnnotationJournal(adapter, folder);
-			const view = await journal.load();
+			let view: JournalView;
+			try {
+				view = await journal.load();
+			} catch (error) {
+				if (!(error instanceof JournalPendingSyncError)) throw error;
+				this.adopt({});
+				this.pendingRevision = true;
+				this.journalWriteFailure = error.message;
+				return;
+			}
 			if (await journal.legacyChanged(this.path)) {
 				throw new Error("旧版 annotations.json 在分文件迁移后发生变化；请先检查另一设备，插件已停止载入以防覆盖");
 			}
@@ -489,7 +498,7 @@ export class PdfAnnotationStore {
 		await adapter.write(this.path, JSON.stringify(payload, null, 2));
 	}
 
-	/** Explicit cutover only. The original file is kept unchanged for audit and export. */
+	/** Explicit cutover only. Delete the old file after validating the new records. */
 	async migrateToRevisionFiles(): Promise<void> {
 		if (this.pendingRevision) throw new Error("分文件数据仍在同步，请等待完成");
 		if (this.journal) return;

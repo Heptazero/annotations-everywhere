@@ -37,6 +37,9 @@ interface JournalManifest {
 	recordCount: number;
 }
 
+/** A manifest can arrive before all baseline records on another device. */
+export class JournalPendingSyncError extends Error {}
+
 interface RecordSnapshot {
 	version: 1;
 	bucket: string;
@@ -265,8 +268,16 @@ export class AnnotationJournal {
 			manualOutlines: copy(metadata.value.manualOutlines ?? {}),
 		};
 		this.baseRecordPaths.clear();
-		const records = await this.adapter.list(`${this.folder}/records`);
-		for (const path of records.files.filter((file) => file.endsWith(".json"))) {
+		const recordsFolder = `${this.folder}/records`;
+		let recordPaths: string[];
+		try {
+			recordPaths = (await this.adapter.list(recordsFolder)).files;
+		} catch (error) {
+			if (await this.adapter.exists(recordsFolder)) throw error;
+			if (manifest.recordCount > 0) throw new JournalPendingSyncError("分文件批注记录尚未同步完整，已暂停读取和写入");
+			recordPaths = [];
+		}
+		for (const path of recordPaths.filter((file) => file.endsWith(".json"))) {
 			let record: RecordSnapshot;
 			try { record = JSON.parse(await this.adapter.read(path)) as RecordSnapshot; }
 			catch { throw new Error(`批注记录文件损坏，已停止读取：${path}`); }
@@ -278,7 +289,10 @@ export class AnnotationJournal {
 			(base.pdfAnnotations[record.bucket] ??= []).push(copy(record.value));
 			this.baseRecordPaths.add(path);
 		}
-		if (this.baseRecordPaths.size !== manifest.recordCount) throw new Error("分文件批注数量校验失败，已停止读取");
+		if (this.baseRecordPaths.size < manifest.recordCount) {
+			throw new JournalPendingSyncError("分文件批注记录尚未同步完整，已暂停读取和写入");
+		}
+		if (this.baseRecordPaths.size > manifest.recordCount) throw new Error("分文件批注数量校验失败，已停止读取");
 		this.legacyHash = manifest.legacyHash;
 		this.base = base;
 		this.events.clear();
