@@ -50,7 +50,7 @@ export class ManualOutlineModal extends Modal {
 				error.setText(this.pageCount === null ? "请输入有效的 PDF 页码" : `页码应在 1–${this.pageCount} 之间`);
 				return;
 			}
-			this.onSave({ id: this.initial?.id ?? `outline-${Date.now()}-${Math.random().toString(36).slice(2)}`, title: cleanTitle, page: startPage, level });
+			this.onSave({ id: this.initial?.id ?? `outline-${crypto.randomUUID()}`, title: cleanTitle, page: startPage, level });
 			this.close();
 		};
 		new Setting(content).addButton((button) => button.setButtonText("取消").onClick(() => this.close()))

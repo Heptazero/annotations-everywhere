@@ -45,7 +45,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 			.setName("批注存放位置")
 			.setDesc(
 				"搜索并选择库内文件夹，也可以填写新文件夹路径；电脑和手机须一致。" +
-					"插件会在其中存放 annotations.json，点击「应用位置」后才更改。"
+					"旧格式使用 annotations.json；分文件格式使用同目录的 revisions 文件夹。点击「应用位置」后才更改。"
 			)
 			.setClass("margin-notes-pdf-data-path-setting")
 			.addText((t) => {
@@ -81,7 +81,9 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				settings.dataPath = pendingDataPath;
 				try {
 					await this.controller.saveSettings(settings);
-					resolved.setText(`实际文件：${this.controller.store.filePath}`);
+					resolved.setText(this.controller.store.usesRevisionFiles
+						? `修订目录：${this.controller.store.revisionFolder}`
+						: `实际文件：${this.controller.store.filePath}`);
 					await refreshDataStatus();
 				} catch (error) {
 					settings.dataPath = previous;
@@ -89,13 +91,19 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				}
 			}));
 		const resolved = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
-		resolved.setText(`实际文件：${this.controller.store.filePath}`);
+		resolved.setText(this.controller.store.usesRevisionFiles
+			? `修订目录：${this.controller.store.revisionFolder}`
+			: `实际文件：${this.controller.store.filePath}`);
 		const dataStatus = pathSetting.descEl.createDiv({ cls: "setting-item-description" });
 		const refreshDataStatus = async (): Promise<void> => {
+			if (this.controller.store.waitingForRevisionFiles) {
+				dataStatus.setText("分文件批注基线尚未同步完成；当前暂停写入");
+				return;
+			}
 			const path = this.controller.store.filePath;
 			const exists = await this.app.vault.adapter.exists(path);
 			dataStatus.setText(exists
-				? `数据文件已找到；已载入 ${this.controller.store.totalAnnotationCount} 条批注`
+				? `数据文件已找到；已载入 ${this.controller.store.totalAnnotationCount} 条批注${this.controller.store.usesRevisionFiles ? "；分文件模式" : ""}`
 				: "数据文件尚未同步到此设备；请检查同步后重新打开设置");
 		};
 		void refreshDataStatus();

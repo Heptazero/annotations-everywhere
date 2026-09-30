@@ -22,6 +22,7 @@ import {
 import type { OrphanedAnnotationSource } from "./annotation-recovery";
 import { mergeManualOutlines, normalizeManualOutline, type ManualOutlineEntry } from "./manual-outline";
 import { buildAnnotationStatusSummaries, type AnnotationStatusSummary } from "./annotation-status";
+import { AnnotationJournal, journalStatesEqual, type JournalEvent, type JournalState, type JournalView } from "./annotation-journal";
 
 interface FileShape {
 	version: number;
@@ -102,6 +103,13 @@ export class PdfAnnotationStore {
 	private listeners = new Set<StoreListener>();
 	private editedSinceLoad = false;
 	private scheduleSave = debounce(() => void this.flush(), 500, true);
+	private journal: AnnotationJournal | null = null;
+	private journalWriteFailure: string | null = null;
+	private pendingRevision = false;
+	private quarantinePath: string | null = null;
+	private quarantineWrites: Promise<void> = Promise.resolve();
+	private pendingJournalWrites: JournalEvent[] = [];
+	private writingJournal = false;
 	/**
 	 * Undo history of whole-annotation-map snapshots.
 	 *
@@ -132,9 +140,99 @@ export class PdfAnnotationStore {
 		return Object.values(this.data).reduce((total, annotations) => total + annotations.length, 0);
 	}
 
+	get usesRevisionFiles(): boolean { return this.journal !== null; }
+	get waitingForRevisionFiles(): boolean { return this.pendingRevision; }
+	get journalConflicts() { return this.journal?.current.conflicts ?? []; }
+	get hasJournalMetadataConflict(): boolean { return this.journal?.current.metadataConflict ?? false; }
+	get journalMetadataVersions() { return this.journal?.current.metadataVersions ?? []; }
+	get journalError(): string | null { return this.journalWriteFailure; }
+	get revisionFolder(): string | null { return this.journal?.folder ?? null; }
+
+	private journalState(): JournalState {
+		return {
+			pdfAnnotations: this.data,
+			pairs: this.pairs,
+			pairModes: this.pairModes,
+			manualOutlines: this.manualOutlines,
+		};
+	}
+
+	private applyJournalView(view: JournalView): void {
+		this.data = view.state.pdfAnnotations;
+		this.pairs = view.state.pairs;
+		this.pairModes = view.state.pairModes;
+		this.manualOutlines = view.state.manualOutlines;
+		// PDF mtime is device-specific. A new device rechecks layout locally.
+		this.pairRevisions = {};
+	}
+
 	private save(): void {
+		if (this.pendingRevision) {
+			this.editedSinceLoad = true;
+			void this.saveQuarantinedSnapshot().catch((error) => {
+				this.journalWriteFailure = `本地待合并副本保存失败：${String(error instanceof Error ? error.message : error)}`;
+				this.notify();
+			});
+			this.journalWriteFailure = `分文件数据尚未合并；当前修改仅保存为待合并副本 ${this.quarantinePath}`;
+			this.notify();
+			return;
+		}
 		this.editedSinceLoad = true;
+		if (this.journal) {
+			let event;
+			try { event = this.journal.stage(this.journalState()); }
+			catch (error) {
+				this.applyJournalView(this.journal.current);
+				this.journalWriteFailure = String(error instanceof Error ? error.message : error);
+				this.notify();
+				return;
+			}
+			if (event) {
+				this.pendingJournalWrites.push(event);
+				void this.drainJournalWrites();
+			}
+			return;
+		}
 		this.scheduleSave();
+	}
+
+	private saveQuarantinedSnapshot(): Promise<void> {
+		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
+		this.quarantinePath ??= `${folder}/annotations-unmerged-${crypto.randomUUID()}.json`;
+		const payload: FileShape = {
+			version: 10, pdfAnnotations: this.data, pairs: this.pairs, pairModes: this.pairModes,
+			manualOutlines: this.manualOutlines, pairRevisions: this.pairRevisions,
+		};
+		const raw = JSON.stringify(payload, null, 2);
+		this.quarantineWrites = this.quarantineWrites.catch(() => undefined)
+			.then(() => this.app.vault.adapter.write(this.quarantinePath!, raw));
+		return this.quarantineWrites;
+	}
+
+	private async drainJournalWrites(): Promise<void> {
+		if (this.writingJournal || !this.journal) return;
+		this.writingJournal = true;
+		try {
+			while (this.pendingJournalWrites.length > 0) {
+				try { await this.journal.persist(this.pendingJournalWrites[0]); }
+				catch (error) {
+					this.journalWriteFailure = String(error instanceof Error ? error.message : error);
+					this.notify();
+					return;
+				}
+				this.pendingJournalWrites.shift();
+			}
+			if (this.journalWriteFailure) {
+				this.journalWriteFailure = null;
+				this.notify();
+			}
+		} finally { this.writingJournal = false; }
+	}
+
+	async retryPendingRevisionWrites(): Promise<boolean> {
+		if (!this.journal || this.pendingJournalWrites.length === 0) return true;
+		await this.drainJournalWrites();
+		return this.pendingJournalWrites.length === 0;
 	}
 
 	get legacyGroupsDowngraded(): number {
@@ -245,12 +343,31 @@ export class PdfAnnotationStore {
 	async load(configuredPath: string): Promise<void> {
 		this.path = resolveDataFilePath(configuredPath);
 		this.editedSinceLoad = false;
+		this.pendingRevision = false;
 		const adapter = this.app.vault.adapter;
 		// Plugin settings may not have reached a second device yet. Only upgrade
 		// the old default when its own file is absent; never override an explicit
 		// custom path or a real file at the old location.
 		if (this.path === PREVIOUS_DEFAULT_FILE && !(await adapter.exists(this.path)) &&
 			(await adapter.exists(PORTABLE_DEFAULT_FILE))) this.path = PORTABLE_DEFAULT_FILE;
+		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
+		if (await AnnotationJournal.exists(adapter, folder)) {
+			if (!(await adapter.exists(`${folder}/revisions/metadata.json`))) {
+				this.adopt({});
+				this.pendingRevision = true;
+				this.journalWriteFailure = "分文件迁移标记已到达，正在等待批注基线同步";
+				return;
+			}
+			const journal = new AnnotationJournal(adapter, folder);
+			const view = await journal.load();
+			if (await journal.legacyChanged(this.path)) {
+				throw new Error("旧版 annotations.json 在分文件迁移后发生变化；请先检查另一设备，插件已停止载入以防覆盖");
+			}
+			this.journal = journal;
+			this.journalWriteFailure = null;
+			this.applyJournalView(view);
+			return;
+		}
 
 		if (await adapter.exists(this.path)) {
 			let parsed: Partial<FileShape>;
@@ -292,6 +409,7 @@ export class PdfAnnotationStore {
 	/** A sync client may deliver the vault file after the plugin has started. Never
 	 * replace annotations created locally in this session with a late arrival. */
 	async loadLateSyncedFile(candidatePath = this.path): Promise<boolean> {
+		if (this.journal || this.pendingRevision) return false;
 		if (this.editedSinceLoad || this.totalAnnotationCount > 0 || Object.keys(this.pairs).length > 0 ||
 			Object.keys(this.manualOutlines).length > 0) return false;
 		const adapter = this.app.vault.adapter;
@@ -316,6 +434,8 @@ export class PdfAnnotationStore {
 
 	/** Moves the backing file when the configured path changes. */
 	async relocate(configuredPath: string): Promise<void> {
+		if (this.pendingRevision) throw new Error("批注基线尚未同步完成，暂不能移动数据目录");
+		if (this.journal) throw new Error("分文件批注启用后暂不支持直接移动目录；请先完成双端同步，避免拆散修订记录");
 		const next = resolveDataFilePath(configuredPath);
 		if (next === this.path) return;
 		const oldPath = this.path;
@@ -353,6 +473,7 @@ export class PdfAnnotationStore {
 	}
 
 	private async flush(): Promise<void> {
+		if (this.journal || this.pendingRevision) return;
 		if (!this.path) return;
 		const adapter = this.app.vault.adapter;
 		const dir = this.path.includes("/") ? this.path.slice(0, this.path.lastIndexOf("/")) : "";
@@ -366,6 +487,142 @@ export class PdfAnnotationStore {
 			pairRevisions: this.pairRevisions,
 		};
 		await adapter.write(this.path, JSON.stringify(payload, null, 2));
+	}
+
+	/** Explicit cutover only. The original file is kept unchanged for audit and export. */
+	async migrateToRevisionFiles(): Promise<void> {
+		if (this.pendingRevision) throw new Error("分文件数据仍在同步，请等待完成");
+		if (this.journal) return;
+		const adapter = this.app.vault.adapter;
+		if (!this.path || !(await adapter.exists(this.path))) throw new Error("请先确认旧批注文件已同步到当前设备");
+		// A palette migration or a just-finished edit may still be waiting in the
+		// old debounced writer. Make the baseline reflect the current in-memory view
+		// before taking its immutable copy.
+		if (this.editedSinceLoad) await this.flush();
+		const raw = await adapter.read(this.path);
+		let parsed: Partial<FileShape>;
+		try { parsed = JSON.parse(raw) as Partial<FileShape>; }
+		catch { throw new Error("旧批注文件无法解析，未迁移"); }
+		if (parsed.version !== 10 || !parsed.pdfAnnotations || typeof parsed.pdfAnnotations !== "object") {
+			throw new Error("请先用当前插件载入并升级旧批注文件，未迁移");
+		}
+		for (const [bucket, list] of Object.entries(parsed.pdfAnnotations)) {
+			if (!Array.isArray(list) || list.some((item) => !item || typeof item.id !== "string" || !item.id ||
+				typeof item.createdAt !== "number" || typeof item.updatedAt !== "number")) {
+				throw new Error(`批注桶格式不完整，未迁移：${bucket}`);
+			}
+			if (new Set(list.map((item) => item.id)).size !== list.length) {
+				throw new Error(`批注桶内有重复 ID，未迁移：${bucket}`);
+			}
+		}
+		const onDisk: JournalState = {
+			pdfAnnotations: Object.fromEntries(Object.entries(parsed.pdfAnnotations ?? {}).map(([key, list]) => [
+				key, (list ?? []).map((annotation) => normalizeAnnotation(annotation)),
+			])),
+			pairs: parsed.pairs ?? {},
+			pairModes: parsed.pairModes ?? {},
+			manualOutlines: Object.fromEntries(Object.entries(parsed.manualOutlines ?? {}).map(([key, list]) => [
+				key, normalizeManualOutline(list),
+			])),
+		};
+		if (!journalStatesEqual(onDisk, this.journalState())) {
+			throw new Error("内存与磁盘批注不一致，未迁移；请检查同步状态并重启插件");
+		}
+		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
+		const journal = new AnnotationJournal(adapter, folder);
+		await journal.create(raw, onDisk);
+		const verify = new AnnotationJournal(adapter, folder);
+		const verifiedView = await verify.load();
+		if (!journalStatesEqual(verifiedView.state, onDisk)) {
+			throw new Error("分文件批注校验失败，旧文件未删除");
+		}
+		await adapter.remove(this.path);
+		this.journal = verify;
+		this.pairRevisions = {};
+		this.notify();
+	}
+
+	/** New immutable files are merged into an open session, including on mobile. */
+	async refreshRevisionFiles(): Promise<boolean> {
+		if (!this.journal) return false;
+		if (await this.journal.legacyChanged(this.path)) {
+			this.journalWriteFailure = "旧版 annotations.json 在迁移后变化；请检查另一设备上的旧插件";
+			this.notify();
+			return false;
+		}
+		const changed = await this.journal.refresh();
+		if (!changed) return false;
+		this.clearHistory();
+		this.applyJournalView(this.journal.current);
+		this.notify();
+		return true;
+	}
+
+	/** A new device can receive the manifest after plugin startup. */
+	async loadLateRevisionFiles(): Promise<boolean> {
+		if (this.journal) return false;
+		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
+		if (!(await AnnotationJournal.exists(this.app.vault.adapter, folder))) return false;
+		if (this.editedSinceLoad) {
+			this.pendingRevision = true;
+			await this.saveQuarantinedSnapshot();
+			this.journalWriteFailure = `本机在分文件数据到达前修改了旧格式；待合并副本：${this.quarantinePath}`;
+			this.notify();
+			return false;
+		}
+		await this.load(folder);
+		this.notify();
+		return this.journal !== null;
+	}
+
+	async resolveRevisionConflict(key: string, revision: string): Promise<void> {
+		if (!this.journal) throw new Error("尚未使用分文件批注");
+		if (!(await this.retryPendingRevisionWrites())) throw new Error("请先保存未写入的批注修订");
+		const view = await this.journal.resolveAnnotation(key, revision);
+		this.clearHistory();
+		this.applyJournalView(view);
+		this.notify();
+	}
+
+	async preserveBothRevisionConflicts(key: string, primaryRevision: string): Promise<void> {
+		if (!this.journal) throw new Error("尚未使用分文件批注");
+		if (!(await this.retryPendingRevisionWrites())) throw new Error("请先保存未写入的批注修订");
+		const view = await this.journal.preserveBothAnnotations(key, primaryRevision);
+		this.clearHistory();
+		this.applyJournalView(view);
+		this.notify();
+	}
+
+	async resolveRevisionMetadataConflict(revision: string): Promise<void> {
+		if (!this.journal) throw new Error("尚未使用分文件批注");
+		if (!(await this.retryPendingRevisionWrites())) throw new Error("请先保存未写入的批注修订");
+		const view = await this.journal.resolveMetadata(revision);
+		this.clearHistory();
+		this.applyJournalView(view);
+		this.notify();
+	}
+
+	/** Creates a v10 copy for rollback; never changes the active revision journal. */
+	async exportLegacySnapshot(): Promise<string> {
+		if (!this.journal) throw new Error("当前仍在使用旧格式");
+		if (!(await this.retryPendingRevisionWrites())) throw new Error("仍有批注修订未写入磁盘；请先重试保存");
+		if (await this.journal.legacyChanged(this.path)) throw new Error("旧版批注文件已变化，不能导出；请先检查另一设备");
+		await this.refreshRevisionFiles();
+		if (this.journal.current.conflicts.length > 0 || this.journal.current.metadataConflict) {
+			throw new Error("请先处理全部同步冲突，再导出旧格式");
+		}
+		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
+		const target = `${folder}/annotations-export-${Date.now()}-${crypto.randomUUID()}.json`;
+		const payload: FileShape = {
+			version: 10,
+			pdfAnnotations: this.journal.current.state.pdfAnnotations,
+			pairs: this.journal.current.state.pairs,
+			pairModes: this.journal.current.state.pairModes,
+			manualOutlines: this.journal.current.state.manualOutlines,
+			pairRevisions: {},
+		};
+		await this.app.vault.adapter.write(target, JSON.stringify(payload, null, 2));
+		return target;
 	}
 
 	/** Resolves a path to the bucket it shares with its counterpart, if paired. */

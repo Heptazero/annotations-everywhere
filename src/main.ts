@@ -9,6 +9,7 @@ import { ANNOTATION_LIST_VIEW, AnnotationListView } from "./pdf/annotation-list-
 import { PdfAnnotationSettingTab } from "./pdf/annotation-settings-tab";
 import { PdfAnnotationsController, type NewNoteForm } from "./pdf/controller";
 import { PairPickerModal } from "./pdf/pair-picker";
+import { AnnotationRevisionConflictModal, AnnotationRevisionMigrationModal } from "./pdf/annotation-revision-modal";
 
 export default class MarginNotesPlugin extends Plugin {
 	private pdfAnnotations!: PdfAnnotationsController;
@@ -153,6 +154,41 @@ export default class MarginNotesPlugin extends Plugin {
 			id: "pdf-show-all-annotation-status",
 			name: "[PDF] 查看全库批注状态",
 			callback: () => this.pdfAnnotations.openAnnotationStatusPicker(),
+		});
+		this.addCommand({
+			id: "pdf-migrate-annotation-revisions",
+			name: "[PDF] 改用可同步的分文件批注",
+			checkCallback: (checking) => {
+				const available = !this.pdfAnnotations.store.usesRevisionFiles;
+				if (!checking && available) new AnnotationRevisionMigrationModal(this.app, this.pdfAnnotations.store).open();
+				return available;
+			},
+		});
+		this.addCommand({
+			id: "pdf-show-annotation-revision-conflicts",
+			name: "[PDF] 查看批注同步冲突",
+			callback: () => new AnnotationRevisionConflictModal(this.app, this.pdfAnnotations.store).open(),
+		});
+		this.addCommand({
+			id: "pdf-export-legacy-annotations",
+			name: "[PDF] 导出旧格式批注副本（用于回退）",
+			checkCallback: (checking) => {
+				const available = this.pdfAnnotations.store.usesRevisionFiles;
+				if (!checking && available) void this.pdfAnnotations.store.exportLegacySnapshot()
+					.then((path) => new Notice(`已导出 ${path}；没有切换存储格式`, 9000))
+					.catch((error) => new Notice(String(error instanceof Error ? error.message : error), 9000));
+				return available;
+			},
+		});
+		this.addCommand({
+			id: "pdf-retry-annotation-revision-writes",
+			name: "[PDF] 重试保存未写入的批注修订",
+			checkCallback: (checking) => {
+				const available = this.pdfAnnotations.store.usesRevisionFiles;
+				if (!checking && available) void this.pdfAnnotations.store.retryPendingRevisionWrites()
+					.then((saved) => new Notice(saved ? "批注修订已写入磁盘" : "仍未写入；请检查磁盘空间与数据目录", 9000));
+				return available;
+			},
 		});
 		this.addCommand({
 			id: "pdf-search-annotations",

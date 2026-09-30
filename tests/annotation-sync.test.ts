@@ -7,7 +7,7 @@ const folder = "99_assets/plugin-data/margin-note";
 const dataFile = `${folder}/annotations.json`;
 const payload = (id: string) => JSON.stringify({
 	version: 10,
-	pdfAnnotations: { "paper.pdf": [{ id, page: 1, text: id, anchor: [0, 0, 0, 0] }] },
+	pdfAnnotations: { "paper.pdf": [{ id, page: 1, text: id, anchor: [0, 0, 0, 0], createdAt: 1, updatedAt: 1 }] },
 	manualOutlines: {},
 	pairs: {},
 	pairModes: {},
@@ -16,7 +16,7 @@ const payload = (id: string) => JSON.stringify({
 
 function makeStore(initial: Record<string, string> = {}) {
 	const files = new Map(Object.entries(initial));
-	const app = { vault: { adapter: {
+	const app = { vault: { getAbstractFileByPath: () => null, adapter: {
 		exists: async (path: string) => files.has(path),
 		read: async (path: string) => {
 			const data = files.get(path);
@@ -25,6 +25,10 @@ function makeStore(initial: Record<string, string> = {}) {
 		},
 		write: async (path: string, data: string) => { files.set(path, data); },
 		mkdir: async () => undefined,
+		list: async (path: string) => ({
+			files: [...files.keys()].filter((file) => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes("/")),
+			folders: [],
+		}),
 		remove: async (path: string) => { files.delete(path); },
 	} } } as unknown as App;
 	const plugin = { loadData: async () => ({}) } as unknown as Plugin;
@@ -100,4 +104,55 @@ function makeStore(initial: Record<string, string> = {}) {
 	assert.equal(store.forFile("paper.pdf")[0].id, "mobile");
 }
 
-console.log("annotation-sync: 6 cases passed");
+// Opt-in migration removes the old file after validation, writes current records
+// individually, and stores later edits as separate immutable revisions.
+{
+	const original = payload("baseline");
+	const { files, store } = makeStore({ [dataFile]: original });
+	await store.load(folder);
+	await store.migrateToRevisionFiles();
+	assert.equal(store.usesRevisionFiles, true);
+	assert.equal(files.has(dataFile), false);
+	store.upsert("paper.pdf", normalizeAnnotation({ id: "after", page: 1, text: "after" }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(files.has(dataFile), false);
+	assert.equal([...files.keys()].filter((path) => path.includes("/revisions/records/")).length, 1);
+	assert.equal([...files.keys()].filter((path) => path.includes("/revisions/changes/")).length, 1);
+	const exportPath = await store.exportLegacySnapshot();
+	assert.deepEqual((JSON.parse(files.get(exportPath)!) as { pdfAnnotations: Record<string, Array<{ id: string }>> })
+		.pdfAnnotations["paper.pdf"].map((item) => item.id).sort(), ["after", "baseline"]);
+	assert.equal(files.has(dataFile), false);
+	const reopened = makeStore(Object.fromEntries(files));
+	await reopened.store.load(folder);
+	assert.deepEqual(reopened.store.forFile("paper.pdf").map((item) => item.id).sort(), ["after", "baseline"]);
+}
+
+// Shared groups keep one visible annotation bucket when expanded to three PDFs.
+{
+	const { files, store } = makeStore({ [dataFile]: payload("original") });
+	await store.load(folder);
+	await store.migrateToRevisionFiles();
+	store.joinShared("paper.pdf", "cn.pdf");
+	store.joinShared("paper.pdf", "second-translation.pdf");
+	store.upsert("second-translation.pdf", normalizeAnnotation({ id: "translated", page: 1, text: "shared" }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const reopened = makeStore(Object.fromEntries(files));
+	await reopened.store.load(folder);
+	for (const path of ["paper.pdf", "cn.pdf", "second-translation.pdf"]) {
+		assert.deepEqual(reopened.store.forFile(path).map((item) => item.id).sort(), ["original", "translated"]);
+	}
+	assert.equal(reopened.store.sharedMembers("cn.pdf").length, 3);
+}
+
+// A modified legacy file indicates an old device is still writing and prevents
+// a new-session silent fork.
+{
+	const { files, store } = makeStore({ [dataFile]: payload("baseline") });
+	await store.load(folder);
+	await store.migrateToRevisionFiles();
+	files.set(dataFile, payload("old-phone-edit"));
+	const reopened = makeStore(Object.fromEntries(files));
+	await assert.rejects(reopened.store.load(folder), /旧版 annotations.json/);
+}
+
+console.log("annotation-sync: 9 cases passed");

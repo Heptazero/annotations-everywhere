@@ -85,6 +85,7 @@ export class PdfAnnotationsController {
 	private outlineReader: PdfOutlineReader;
 	private layoutRecheckTimers = new Map<string, number>();
 	private lateSyncTimer: number | null = null;
+	private lastJournalError: string | null = null;
 	private fileLifecycle: SharedFileLifecycle;
 
 	constructor(
@@ -116,6 +117,8 @@ export class PdfAnnotationsController {
 			new Notice(String(e instanceof Error ? e.message : e));
 			throw e;
 		}
+		if (this.store.waitingForRevisionFiles) new Notice("分文件批注仍在同步；基线到达前已暂停写入", 9000);
+		this.lastJournalError = this.store.journalError;
 		if (resolveDataFilePath(this.settings.dataPath) !== this.store.filePath) {
 			this.settings = {
 				...this.settings,
@@ -140,16 +143,31 @@ export class PdfAnnotationsController {
 		// (Layer rebuilds are debounced and skip while a note is being dragged or
 		// edited, so the extra churn from in-layer edits is harmless.)
 		this.plugin.register(this.store.onChange(() => {
+			const error = this.store.journalError;
+			if (error && error !== this.lastJournalError) new Notice(`批注保存未完成：${error}`, 12000);
+			this.lastJournalError = error;
 			this.rebuildAll();
 			this.annotationPropertySync.queue();
 		}));
 		const queueLateSync = (file: { path: string }): void => {
 			const oldDefaultReceivingPortableFile = this.store.filePath === ".margin-notes-hz/annotations.json" &&
 				file.path === resolveDataFilePath(DEFAULT_PDF_ANNOTATION_SETTINGS.dataPath);
-			if (file.path !== this.store.filePath && !oldDefaultReceivingPortableFile) return;
+			const dataFolder = this.store.filePath.slice(0, this.store.filePath.lastIndexOf("/"));
+			const revisionFile = file.path.startsWith(`${dataFolder}/revisions/`);
+			if (file.path !== this.store.filePath && !oldDefaultReceivingPortableFile && !revisionFile) return;
 			if (this.lateSyncTimer !== null) window.clearTimeout(this.lateSyncTimer);
 			this.lateSyncTimer = window.setTimeout(() => {
 				this.lateSyncTimer = null;
+				if (revisionFile) {
+					void (this.store.usesRevisionFiles
+						? this.store.refreshRevisionFiles()
+						: this.store.loadLateRevisionFiles()).then((loaded) => {
+						if (!loaded) return;
+						const conflicts = this.store.journalConflicts.length + Number(this.store.hasJournalMetadataConflict);
+						if (conflicts > 0) new Notice(`批注同步有 ${conflicts} 处冲突，请运行「查看批注同步冲突」`, 9000);
+					}).catch((error) => new Notice(String(error instanceof Error ? error.message : error)));
+					return;
+				}
 				void this.store.loadLateSyncedFile(file.path).then(async (loaded) => {
 					if (!loaded) return;
 					if (resolveDataFilePath(this.settings.dataPath) !== this.store.filePath) {
@@ -166,6 +184,7 @@ export class PdfAnnotationsController {
 		};
 		this.plugin.registerEvent(this.app.vault.on("create", queueLateSync));
 		this.plugin.registerEvent(this.app.vault.on("modify", queueLateSync));
+		this.plugin.registerEvent(this.app.vault.on("delete", queueLateSync));
 		this.plugin.register(() => {
 			if (this.lateSyncTimer !== null) window.clearTimeout(this.lateSyncTimer);
 		});

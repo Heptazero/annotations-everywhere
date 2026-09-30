@@ -149,7 +149,7 @@ export function normalizeAnnotation(raw: LegacyAnnotation): PdfAnnotation {
 }
 
 export function makeAnnotationId(): string {
-	return `pa-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+	return `pa-${crypto.randomUUID()}`;
 }
 
 export const DEFAULT_FREE_WIDTH_PCT = 26;

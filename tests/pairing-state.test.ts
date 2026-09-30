@@ -9,6 +9,7 @@ import "./pdf-layout.test";
 import "./editor-key-scope.test";
 import "./source-annotation-sync.test";
 import "./annotation-sync.test";
+import "./annotation-journal.test";
 import "./folder-path-search.test";
 import { TFile } from "obsidian";
 import { PdfAnnotationStore } from "../src/pdf/annotation-store";
