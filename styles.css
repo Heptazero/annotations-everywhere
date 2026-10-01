@@ -1634,6 +1634,17 @@
 	gap: 2px;
 }
 
+.margin-notes-manager-group-meta {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.margin-notes-manager-attach {
+	flex: none;
+}
+
 .margin-notes-manager-group-updated {
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
@@ -1736,6 +1747,13 @@
 	margin-top: 8px;
 	color: var(--text-error);
 	font-size: var(--font-ui-small);
+}
+
+.margin-notes-manager-recovery-path {
+	margin-top: 4px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {

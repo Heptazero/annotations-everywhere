@@ -470,6 +470,38 @@ export class PdfAnnotationsController {
 	 * or restored a PDF outside Obsidian. Page numbers rule out impossible
 	 * sources; filename resemblance only ranks the manual choices.
 	 */
+	orphanedAnnotationSources(): OrphanedAnnotationSource[] {
+		const existingPaths = new Set(
+			this.app.vault
+				.getFiles()
+				.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
+				.map((candidate) => candidate.path)
+		);
+		return this.store.orphanedAnnotationSources(existingPaths);
+	}
+
+	annotationRecoveryTargets(sourcePath: string): string[] {
+		return listPairingCandidates(this.app, sourcePath);
+	}
+
+	/** Reverse of the legacy command: start from an orphan group and choose its live target. */
+	async recoverOrphanedAnnotationTo(
+		sourcePath: string,
+		targetPath: string
+	): Promise<{ sourceCount: number; previousTargetCount: number; resultCount: number }> {
+		if (this.store.waitingForRevisionFiles) throw new Error("批注数据仍在等待同步，暂不能挂载");
+		const source = this.orphanedAnnotationSources().find((candidate) => candidate.path === sourcePath);
+		if (!source) throw new Error("这组批注已经被恢复、重新关联，或属于需要先解除的旧共享组");
+		const target = this.app.vault.getAbstractFileByPath(targetPath);
+		if (!isPdf(target)) throw new Error("目标 PDF 已移动或删除");
+		const layout = await readPdfLayout(this.app, target);
+		if (!layout) throw new Error("无法读取目标 PDF 的页数");
+		if (source.maxPage > layout.length) {
+			throw new Error(`旧批注最远到第 ${source.maxPage} 页，但目标 PDF 只有 ${layout.length} 页`);
+		}
+		return this.finishOrphanedAnnotationRecovery(targetPath, source.path);
+	}
+
 	async chooseOrphanedAnnotationRecovery(): Promise<void> {
 		const file = this.currentPdfTarget();
 		if (!file) return;
@@ -481,13 +513,7 @@ export class PdfAnnotationsController {
 			return;
 		}
 
-		const existingPaths = new Set(
-			this.app.vault
-				.getFiles()
-				.filter((candidate) => candidate.extension.toLowerCase() === "pdf")
-				.map((candidate) => candidate.path)
-		);
-		const all = this.store.orphanedAnnotationSources(existingPaths);
+		const all = this.orphanedAnnotationSources();
 		const candidates = compatibleRecoverySources(file.path, layout.length, all);
 		if (candidates.length === 0) {
 			new Notice(
@@ -504,33 +530,41 @@ export class PdfAnnotationsController {
 	}
 
 	private applyOrphanedAnnotationRecovery(targetPath: string, source: OrphanedAnnotationSource): void {
-		if (!isPdf(this.app.vault.getAbstractFileByPath(targetPath))) {
-			new Notice("当前 PDF 已移动或删除，请重新打开后再恢复批注");
-			return;
+		try {
+			const recovered = this.finishOrphanedAnnotationRecovery(targetPath, source.path);
+			this.showOrphanedRecoveryNotice(recovered);
+		} catch (cause) {
+			new Notice(String(cause instanceof Error ? cause.message : cause));
 		}
-		if (this.app.vault.getAbstractFileByPath(source.path)) {
-			new Notice("旧路径已经重新出现，未移动其批注");
-			return;
-		}
-		const recovered = this.store.recoverOrphanedAnnotations(source.path, targetPath);
-		if (!recovered) {
-			new Notice("这份旧批注已经被恢复或重新关联");
-			return;
-		}
+	}
 
-		const split = this.settings.doubleColumnSplits[source.path];
+	private finishOrphanedAnnotationRecovery(
+		targetPath: string,
+		sourcePath: string
+	): { sourceCount: number; previousTargetCount: number; resultCount: number } {
+		if (!isPdf(this.app.vault.getAbstractFileByPath(targetPath))) {
+			throw new Error("目标 PDF 已移动或删除");
+		}
+		if (this.app.vault.getAbstractFileByPath(sourcePath)) {
+			throw new Error("旧路径已经重新出现，未移动其批注");
+		}
+		const recovered = this.store.recoverOrphanedAnnotations(sourcePath, targetPath);
+		if (!recovered) throw new Error("这份旧批注已经被恢复或重新关联");
+
+		const split = this.settings.doubleColumnSplits[sourcePath];
 		if (split !== undefined) {
 			const next = { ...this.settings.doubleColumnSplits };
-			delete next[source.path];
+			delete next[sourcePath];
 			if (next[targetPath] === undefined) next[targetPath] = split;
 			this.patchSettings({ doubleColumnSplits: next });
 		}
-		const merged = recovered.previousTargetCount > 0;
-		new Notice(
-			merged
-				? `已合并恢复 ${recovered.sourceCount} 条旧批注；当前共有 ${recovered.resultCount} 条`
-				: `已恢复 ${recovered.resultCount} 条批注到当前 PDF`
-		);
+		return recovered;
+	}
+
+	showOrphanedRecoveryNotice(recovered: { sourceCount: number; previousTargetCount: number; resultCount: number }): void {
+		new Notice(recovered.previousTargetCount > 0
+			? `已合并挂载 ${recovered.sourceCount} 条旧批注；目标当前共有 ${recovered.resultCount} 条`
+			: `已挂载 ${recovered.resultCount} 条批注到目标 PDF`);
 	}
 
 	/**

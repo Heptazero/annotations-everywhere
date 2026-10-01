@@ -6,6 +6,8 @@ import type { PdfAnnotationsController } from "./controller";
 import { AnnotationTransferModal, DeleteAnnotationsModal } from "./annotation-batch-modal";
 import type { AnnotationSelectionRef } from "./annotation-batch";
 import { AnnotationFolderSuggest } from "./annotation-folder-suggest";
+import type { OrphanedAnnotationSource } from "./annotation-recovery";
+import { AnnotationRecoveryTargetModal } from "./annotation-recovery-target-modal";
 
 export const ANNOTATION_MANAGER_VIEW = "margin-notes-hz-annotation-manager";
 
@@ -14,6 +16,7 @@ type TimeOrder = "newest" | "oldest";
 interface VisibleGroup {
 	summary: AnnotationStatusSummary;
 	annotations: PdfAnnotation[];
+	recoverySource?: OrphanedAnnotationSource;
 }
 
 function selectionKey(bucket: string, id: string): string {
@@ -94,8 +97,12 @@ export class AnnotationManagerView extends ItemView {
 	}
 
 	private readGroups(): { all: VisibleGroup[]; visible: VisibleGroup[] } {
+		const recoverySources = new Map(
+			this.controller.orphanedAnnotationSources().map((source) => [source.path, source])
+		);
 		const all = this.controller.annotationStatusSummaries().map((summary) => ({
 			summary,
+			recoverySource: recoverySources.get(summary.key),
 			annotations: this.controller.store.forFile(summary.key).sort((a, b) => {
 				const timeDelta = a.updatedAt - b.updatedAt;
 				if (timeDelta !== 0) return this.timeOrder === "newest" ? -timeDelta : timeDelta;
@@ -317,7 +324,7 @@ export class AnnotationManagerView extends ItemView {
 	}
 
 	private renderGroup(host: HTMLElement, group: VisibleGroup): void {
-		const { summary, annotations } = group;
+		const { summary, annotations, recoverySource } = group;
 		const section = host.createDiv("margin-notes-manager-group");
 		const header = section.createDiv("margin-notes-manager-group-header");
 		const groupKeys = annotations.map((annotation) => selectionKey(summary.key, annotation.id));
@@ -343,13 +350,33 @@ export class AnnotationManagerView extends ItemView {
 
 		const identity = header.createDiv("margin-notes-manager-group-identity");
 		const nameRow = identity.createDiv("margin-notes-manager-group-name-row");
-		nameRow.createSpan({ cls: "margin-notes-manager-group-name", text: displayName(summary.representativePath) });
+		nameRow.createSpan({
+			cls: "margin-notes-manager-group-name",
+			text: summary.status === "orphaned"
+				? `原文件：${displayName(summary.representativePath)}`
+				: displayName(summary.representativePath),
+		});
 		nameRow.createSpan({ cls: `margin-notes-manager-status is-${summary.status}`, text: statusLabel(summary.status) });
-		identity.createDiv({ cls: "margin-notes-manager-group-path", text: summary.representativePath });
+		identity.createDiv({
+			cls: "margin-notes-manager-group-path",
+			text: summary.status === "orphaned"
+				? `原路径（文件已不存在）：${summary.representativePath}`
+				: summary.representativePath,
+		});
 		if (summary.status === "shared") {
 			identity.createDiv({ cls: "margin-notes-manager-members", text: summary.memberPaths.join(" · ") });
 		}
-		const stats = header.createDiv("margin-notes-manager-group-stats");
+		const meta = header.createDiv("margin-notes-manager-group-meta");
+		if (recoverySource) {
+			const attach = meta.createEl("button", {
+				cls: "clickable-icon margin-notes-manager-attach",
+				attr: { type: "button", "aria-label": "挂载到现存 PDF", title: "挂载到现存 PDF" },
+			});
+			setIcon(attach, "link-2");
+			attach.disabled = this.controller.store.waitingForRevisionFiles;
+			attach.addEventListener("click", () => this.openRecovery(recoverySource));
+		}
+		const stats = meta.createDiv("margin-notes-manager-group-stats");
 		stats.createSpan({ cls: "margin-notes-manager-group-count", text: `${annotations.length} 条` });
 		if (summary.lastUpdatedAt) {
 			stats.createSpan({
@@ -405,6 +432,18 @@ export class AnnotationManagerView extends ItemView {
 			return;
 		}
 		void this.controller.revealAnnotation(path, annotation, true);
+	}
+
+	private openRecovery(source: OrphanedAnnotationSource): void {
+		const candidates = this.controller.annotationRecoveryTargets(source.path);
+		if (candidates.length === 0) {
+			new Notice("库中没有可挂载的现存 PDF");
+			return;
+		}
+		new AnnotationRecoveryTargetModal(this.app, source, candidates, async (targetPath) => {
+			const recovered = await this.controller.recoverOrphanedAnnotationTo(source.path, targetPath);
+			this.controller.showOrphanedRecoveryNotice(recovered);
+		}).open();
 	}
 
 	private openTransfer(group: VisibleGroup | undefined): void {
