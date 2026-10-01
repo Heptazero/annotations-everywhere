@@ -1,6 +1,6 @@
 {
 	"name": "margin-notes-hz",
-	"version": "0.48.0",
+	"version": "0.49.0",
 	"description": "Footnote definitions rendered as an editable right-margin sidenote in Obsidian",
 	"main": "main.js",
 	"scripts": {
