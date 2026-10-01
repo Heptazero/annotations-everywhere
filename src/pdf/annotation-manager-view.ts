@@ -219,30 +219,28 @@ export class AnnotationManagerView extends ItemView {
 			});
 		}
 
-		const timeSegments = filterBar.createDiv({
-			cls: "margin-notes-manager-segments margin-notes-manager-time-order",
-			attr: { role: "group", "aria-label": "按修改时间排序" },
+		const sortLabel = this.timeOrder === "newest"
+			? "当前按修改时间从新到旧；点击改为从旧到新"
+			: "当前按修改时间从旧到新；点击改为从新到旧";
+		const sortByTime = filterBar.createEl("button", {
+			cls: "clickable-icon margin-notes-manager-tool-icon",
+			attr: { type: "button", "aria-label": sortLabel, title: sortLabel },
 		});
-		const timeOptions: Array<[TimeOrder, string]> = [["newest", "新 → 旧"], ["oldest", "旧 → 新"]];
-		for (const [value, label] of timeOptions) {
-			const button = timeSegments.createEl("button", {
-				text: label,
-				attr: { type: "button", "aria-pressed": String(this.timeOrder === value) },
-			});
-			button.addEventListener("click", () => {
-				this.timeOrder = value;
-				this.contentEl.scrollTop = 0;
-				this.render();
-			});
-		}
+		setIcon(sortByTime, this.timeOrder === "newest" ? "arrow-down-wide-narrow" : "arrow-up-narrow-wide");
+		sortByTime.addEventListener("click", () => {
+			this.timeOrder = this.timeOrder === "newest" ? "oldest" : "newest";
+			this.contentEl.scrollTop = 0;
+			this.render();
+		});
 
 		const visibleGroupKeys = visible.map(({ summary }) => summary.key);
 		const allVisibleCollapsed = visibleGroupKeys.length > 0 && visibleGroupKeys.every((key) => this.collapsed.has(key));
+		const collapseLabel = allVisibleCollapsed ? "全部展开当前结果" : "全部折叠当前结果";
 		const collapseAll = filterBar.createEl("button", {
-			cls: "margin-notes-manager-collapse-all",
-			text: allVisibleCollapsed ? "全部展开" : "全部折叠",
-			attr: { type: "button" },
+			cls: "clickable-icon margin-notes-manager-tool-icon",
+			attr: { type: "button", "aria-label": collapseLabel, title: collapseLabel },
 		});
+		setIcon(collapseAll, allVisibleCollapsed ? "chevrons-up-down" : "chevrons-down-up");
 		collapseAll.disabled = visibleGroupKeys.length === 0;
 		collapseAll.addEventListener("click", () => {
 			for (const key of visibleGroupKeys) {

@@ -1493,9 +1493,11 @@
 	transform: translateY(-50%);
 }
 
-.margin-notes-manager-time-order,
-.margin-notes-manager-collapse-all {
+.margin-notes-manager-tool-icon {
 	flex: none;
+	width: 32px;
+	height: 32px;
+	padding: 6px;
 }
 
 .margin-notes-manager-selection-bar {
@@ -1749,18 +1751,12 @@
 
 	.margin-notes-manager-filterbar {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-columns: minmax(0, 1fr) 44px 44px;
 		gap: 8px;
 	}
 
 	.margin-notes-manager-folder-filter {
-		grid-column: 1 / -1;
 		min-width: 0;
-	}
-
-	.margin-notes-manager-time-order {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 
 	.margin-notes-manager-search {
@@ -1810,6 +1806,11 @@
 	.margin-notes-manager-transfer-modal button,
 	.margin-notes-manager-transfer-modal input {
 		min-height: 44px;
+	}
+
+	.margin-notes-manager-tool-icon {
+		width: 44px;
+		height: 44px;
 	}
 
 	.margin-notes-manager-row,
