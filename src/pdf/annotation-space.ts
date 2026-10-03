@@ -44,7 +44,7 @@ export class LeftAnnotationSpace {
 		const next = requestedPx > 0 ? Math.ceil(requestedPx) : 0;
 		let current = this.state.get(scroller);
 		// Remove the pre-v0.45 padding implementation after a hot reload.
-		scroller.style.paddingLeft = "";
+		scroller.setCssStyles({ paddingLeft: "" });
 		if (current && viewerRoot && current.viewerRoot !== viewerRoot) {
 			this.restoreViewer(current.viewerRoot);
 			this.state.delete(scroller);
@@ -82,16 +82,16 @@ export class LeftAnnotationSpace {
 			scroller.scrollLeft = Math.max(0, scroller.scrollLeft - current.gutter);
 		}
 		this.state.delete(scroller);
-		scroller.style.paddingLeft = "";
+		scroller.setCssStyles({ paddingLeft: "" });
 	}
 
 	private shiftViewer(viewerRoot: HTMLElement, gutter: number): void {
-		viewerRoot.style.setProperty(GUTTER_PROPERTY, `${gutter}px`);
+		viewerRoot.setCssProps({ [GUTTER_PROPERTY]: `${gutter}px` });
 		viewerRoot.classList.toggle(SHIFTED_VIEWER_CLASS, gutter > 0);
 	}
 
 	private restoreViewer(viewerRoot: HTMLElement): void {
 		viewerRoot.classList.remove(SHIFTED_VIEWER_CLASS);
-		viewerRoot.style.removeProperty(GUTTER_PROPERTY);
+		viewerRoot.setCssProps({ [GUTTER_PROPERTY]: "" });
 	}
 }

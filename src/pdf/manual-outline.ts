@@ -69,7 +69,8 @@ export function combineOutlines(native: PdfOutlineItem[], manual: ManualOutlineE
 	const flat: FlatItem[] = [];
 	const walk = (items: PdfOutlineItem[], level: number): void => {
 		for (const item of items) {
-			flat.push({ item, level, order: flat.length, sortPage: firstOutlinePage(item) ?? flat.at(-1)?.sortPage ?? 1 });
+			const previous = flat[flat.length - 1];
+			flat.push({ item, level, order: flat.length, sortPage: firstOutlinePage(item) ?? previous?.sortPage ?? 1 });
 			walk(item.items, level + 1);
 		}
 	};

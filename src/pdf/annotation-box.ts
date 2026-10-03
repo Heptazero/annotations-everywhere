@@ -105,8 +105,8 @@ export function buildAnnotationBox(parent: HTMLElement, extraClass: string, opts
 		editor.spellcheck = false;
 		releaseNavigationScope = beginTextEditorNavigationScope(opts.app);
 		const resize = () => {
-			editor.style.height = "0px";
-			editor.style.height = `${Math.max(48, editor.scrollHeight)}px`;
+			editor.setCssStyles({ height: "0px" });
+			editor.setCssStyles({ height: `${Math.max(48, editor.scrollHeight)}px` });
 		};
 		editor.addEventListener("input", resize);
 		editor.addEventListener("blur", () => finishEdit(true));

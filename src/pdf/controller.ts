@@ -336,7 +336,7 @@ export class PdfAnnotationsController {
 		for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
 			const state = this.states.get(leaf.view as FileView);
 			if (!state || state.currentPath() !== pdfPath) continue;
-			const page = state.pages.values().next().value as PDFPageView | undefined;
+			const page = state.pages.values().next().value;
 			if (!page?.pdfPage?.view) continue;
 			const [left, , right] = page.pdfPage.view;
 			return (left + right) / 2;
@@ -615,7 +615,7 @@ export class PdfAnnotationsController {
 		view: FileView | null = getActivePDFView(this.app)
 	): void {
 		this.closePendingMarkPopover();
-		const anchor = anchorRects?.at(-1) ?? rect;
+		const anchor = anchorRects?.[anchorRects.length - 1] ?? rect;
 		const pageBox = pageView.div.getBoundingClientRect();
 		const [ax, ay] = pageView.viewport.convertToViewportPoint(anchor[0], anchor[1]);
 		const [bx, by] = pageView.viewport.convertToViewportPoint(anchor[2], anchor[3]);
@@ -815,7 +815,7 @@ export class PdfAnnotationsController {
 	private async recheckEntireChangedGroup(members: string[]): Promise<number> {
 		const files = members.map((path) => this.app.vault.getAbstractFileByPath(path));
 		if (!files.every(isPdf)) return 0;
-		const pdfs = files as TFile[];
+		const pdfs = files.filter(isPdf);
 		const before = pdfs.map((file) => ({ mtime: file.stat.mtime, size: file.stat.size }));
 		const layouts = await Promise.all(pdfs.map((file) => readPdfLayout(this.app, file)));
 		if (layouts.some((layout) => layout === null)) return 0;
@@ -1016,7 +1016,7 @@ export class PdfAnnotationsController {
 			.getLeavesOfType("pdf")
 			.find((l) => (l.view as FileView).file?.path === other);
 		if (existing) {
-			this.app.workspace.revealLeaf(existing);
+			await this.app.workspace.revealLeaf(existing);
 			return;
 		}
 		await this.app.workspace.getLeaf("split").openFile(target);

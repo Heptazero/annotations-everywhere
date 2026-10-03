@@ -1,20 +1,25 @@
 {
 	"name": "annotations-everywhere",
-	"version": "0.50.0",
+	"version": "0.50.1",
 	"description": "Editable Markdown sidenotes and portable PDF annotations",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"lint": "eslint src",
 		"test": "node tests/run-pairing-tests.mjs"
 	},
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^20.0.0",
-		"builtin-modules": "^3.3.0",
 		"esbuild": "^0.21.0",
+		"eslint": "^9.39.5",
+		"eslint-plugin-obsidianmd": "^0.4.2",
 		"obsidian": "latest",
 		"tslib": "2.4.0",
 		"typescript": "^5.5.0"
+	},
+	"dependencies": {
+		"@codemirror/view": "6.38.6"
 	}
 }

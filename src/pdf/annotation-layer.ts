@@ -160,7 +160,7 @@ export class AnnotationLayer {
 		if (this.scroller && this.scroller !== scroller) this.leftSpace.clear(this.scroller);
 		// CM6's `.cm-scroller` gets `position: relative` from its own base theme;
 		// nothing gives the PDF viewer's scroller that for free.
-		if (getComputedStyle(scroller).position === "static") scroller.style.position = "relative";
+		if (getComputedStyle(scroller).position === "static") scroller.setCssStyles({ position: "relative" });
 
 		this.scroller?.removeEventListener("mousemove", this.onScrollerMove);
 		this.scroller?.removeEventListener("contextmenu", this.onScrollerContextMenu);
@@ -278,7 +278,7 @@ export class AnnotationLayer {
 			}
 		}
 		if (built.length === 0) {
-			layer.style.width = "";
+			layer.setCssStyles({ width: "" });
 			if (this.scroller) {
 				this.leftSpace.apply(this.scroller, null, 0);
 				this.renderModeDecorations([], settings, this.scroller, marks);
@@ -484,18 +484,20 @@ export class AnnotationLayer {
 		ann: PdfAnnotation,
 		box: PageBox
 	): void {
-		el.style.width = `${widthPt}px`;
-		el.style.height = heightPt ? `${heightPt}px` : "";
-		el.style.fontSize = `${settings.fontSize * (ann.fontScale ?? 1)}px`;
-		el.style.transformOrigin = "top left";
-		el.style.transform = `scale(${box.unit})`;
+		el.setCssStyles({
+			width: `${widthPt}px`,
+			height: heightPt ? `${heightPt}px` : "",
+			fontSize: `${settings.fontSize * (ann.fontScale ?? 1)}px`,
+			transformOrigin: "top left",
+			transform: `scale(${box.unit})`,
+		});
 		// The whole box is scaled, which is right for text and spacing but wrong
 		// for the hairlines: a 1px rule multiplied by the zoom stops being a
 		// hairline and turns into a heavy slab (a 2px spine at 3x reads as 6px).
 		// Rules are device-pixel furniture, not content, so styles.css divides
 		// them by this to cancel the transform out and keep them ~1px on screen
 		// at every zoom level.
-		el.style.setProperty("--margin-notes-pdf-inv", String(box.unit > 0 ? 1 / box.unit : 1));
+		el.setCssProps({ "--margin-notes-pdf-inv": String(box.unit > 0 ? 1 / box.unit : 1) });
 	}
 
 	/**

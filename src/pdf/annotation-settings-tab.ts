@@ -38,7 +38,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		};
 		const commit = () => void this.controller.saveSettings(settings);
 
-		containerEl.createEl("h3", { text: "批注数据" });
+		new Setting(containerEl).setName("批注数据").setHeading();
 		let pendingDataPath = settings.dataPath;
 
 		const pathSetting = new Setting(containerEl)
@@ -263,7 +263,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		};
 		renderLayerRows();
 
-		containerEl.createEl("h3", { text: "外观" });
+		new Setting(containerEl).setName("外观").setHeading();
 
 		containerEl.createEl("p", {
 			cls: "setting-item-description",

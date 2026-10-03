@@ -78,8 +78,9 @@ export class SourceAnnotationSync {
 			}
 
 			await this.app.fileManager.processFrontMatter(preview.note, (frontmatter) => {
-				if (preview.after === true) frontmatter[preview.property] = true;
-				else delete frontmatter[preview.property];
+				const properties = frontmatter as Record<string, unknown>;
+				if (preview.after === true) properties[preview.property] = true;
+				else delete properties[preview.property];
 			});
 			updated++;
 		}
@@ -133,7 +134,7 @@ export class SourceAnnotationSync {
 		const after = hasAnnotations ? true : undefined;
 		const rawBefore: unknown = frontmatter?.[property];
 		if (rawBefore !== undefined && typeof rawBefore !== "boolean") return null;
-		const before = rawBefore as boolean | undefined;
+		const before = rawBefore;
 		if (before === after) return null;
 		return { note, property, before, after };
 	}

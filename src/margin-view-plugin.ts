@@ -71,8 +71,7 @@ class MarginNotesViewPlugin {
 		private settingsController: MarkdownMarginSettingsController,
 	) {
 		this.renderComponent.load();
-		this.layer = document.createElement("div");
-		this.layer.className = LAYER_CLASS;
+		this.layer = createDiv({ cls: LAYER_CLASS });
 		this.marginSettings = settingsController.get();
 		this.applyMarginSettings(this.marginSettings);
 		this.unsubscribeSettings = settingsController.onChange((settings) => {

@@ -33,7 +33,7 @@ export default class AnnotationsEverywherePlugin extends Plugin {
 
 		this.addCommand({
 			id: "clean-orphan-footnotes",
-			name: "清理无引用的脚注定义 (Clean orphan footnote definitions)",
+			name: "清理无引用的脚注定义 (clean orphan footnote definitions)",
 			editorCallback: (editor) => this.cleanOrphans(editor),
 		});
 

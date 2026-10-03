@@ -1,8 +1,8 @@
 {
 	"id": "annotations-everywhere",
 	"name": "Annotations Everywhere",
-	"version": "0.50.0",
-	"minAppVersion": "1.5.8",
+	"version": "0.50.1",
+	"minAppVersion": "1.7.2",
 	"description": "Add editable Markdown sidenotes and PDF annotations with shared documents, searchable layers, manual outlines, and mobile-friendly controls.",
 	"author": "heptazero",
 	"authorUrl": "https://github.com/Heptazero",

@@ -43,8 +43,8 @@ export interface PDFPageView {
 }
 
 export interface PDFEventBus {
-	on(name: string, cb: (data: any) => void): void;
-	off(name: string, cb: (data: any) => void): void;
+	on<T>(name: string, cb: (data: T) => void): void;
+	off<T>(name: string, cb: (data: T) => void): void;
 }
 
 export interface PDFViewer {

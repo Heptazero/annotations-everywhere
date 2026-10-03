@@ -72,6 +72,9 @@ let currentScrollLeft = 100;
 let widthReady = false;
 const fakeRailScroller = {
 	style: { paddingLeft: "" },
+	setCssStyles(styles: Partial<CSSStyleDeclaration>) {
+		if (typeof styles.paddingLeft === "string") this.style.paddingLeft = styles.paddingLeft;
+	},
 	get scrollLeft() {
 		return currentScrollLeft;
 	},
@@ -92,13 +95,11 @@ const fakeViewerRoot = {
 			viewerClasses.delete(name);
 		},
 	},
-	style: {
-		setProperty(name: string, value: string) {
-			viewerProperties.set(name, value);
-		},
-		removeProperty(name: string) {
-			viewerProperties.delete(name);
-		},
+	setCssProps(properties: Record<string, string>) {
+		for (const [name, value] of Object.entries(properties)) {
+			if (value) viewerProperties.set(name, value);
+			else viewerProperties.delete(name);
+		}
 	},
 };
 const space = new LeftAnnotationSpace();

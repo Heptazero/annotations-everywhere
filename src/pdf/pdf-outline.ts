@@ -29,6 +29,10 @@ export interface PdfOutlineDocument {
 	destroy(): Promise<void> | void;
 }
 
+interface PdfJsModule {
+	getDocument(args: { data: ArrayBuffer }): { promise: Promise<PdfOutlineDocument> };
+}
+
 export interface NativePdfOutlineItem {
 	title: string;
 	dest: unknown[] | null;
@@ -51,7 +55,7 @@ function cleanTitle(value: string | undefined): string {
 
 function destinationTop(dest: unknown[]): number | null {
 	const mode = dest[1];
-	const name = typeof mode === "object" && mode !== null && "name" in mode ? String((mode as { name: unknown }).name) : "";
+	const name = typeof mode === "object" && mode !== null && "name" in mode ? String(mode.name) : "";
 	const value = name === "XYZ" ? dest[3] : name === "FitH" || name === "FitBH" ? dest[2] : name === "FitR" ? dest[5] : null;
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -178,9 +182,9 @@ export class PdfOutlineReader {
 	}
 
 	private async readFresh(file: TFile): Promise<PdfOutlineItem[]> {
-		const pdfjs = await loadPdfJs();
+		const pdfjs = (await loadPdfJs()) as unknown as PdfJsModule;
 		const data = await this.app.vault.readBinary(file);
-		const doc = (await pdfjs.getDocument({ data }).promise) as PdfOutlineDocument;
+		const doc = await pdfjs.getDocument({ data }).promise;
 		try {
 			return resolvePdfOutline(doc, await doc.getOutline());
 		} finally {

@@ -138,14 +138,15 @@ export function materializeJournal(base: JournalState, events: Iterable<JournalE
 			conflicts.push({ key, versions: copy(candidates) });
 		}
 		// A conflicting deletion must not make a surviving edit disappear from view.
-		const visible = candidates.filter((candidate) => candidate.value !== null).at(-1)?.value;
+		const visibleCandidates = candidates.filter((candidate) => candidate.value !== null);
+		const visible = visibleCandidates[visibleCandidates.length - 1]?.value;
 		if (!visible) continue;
 		const [bucket] = JSON.parse(key) as [string, string];
 		(next.pdfAnnotations[bucket] ??= []).push(copy(visible));
 	}
 	const metadataHeads = heads(metadataVersions);
 	const activeMetadata = metadataHeads.map((revision) => ({ revision, value: copy(metadataVersions.get(revision)!.value) }));
-	const selected = activeMetadata.at(-1)?.value ?? metadataOf(base);
+	const selected = activeMetadata[activeMetadata.length - 1]?.value ?? metadataOf(base);
 	next.pairs = copy(selected.pairs);
 	next.pairModes = copy(selected.pairModes);
 	next.manualOutlines = copy(selected.manualOutlines);
