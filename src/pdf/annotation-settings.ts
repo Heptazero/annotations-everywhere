@@ -17,7 +17,7 @@ export interface PdfAnnotationSettings {
 	/**
 	 * Where the annotations JSON lives, vault-relative. A path with no `.json`
 	 * suffix is treated as a FOLDER and the file goes inside it — that's what a
-	 * bare name like `99_assets/plugin-data/margin-note` obviously means, and
+	 * bare name like `.annotations-everywhere` obviously means, and
 	 * silently writing a file with that exact name instead left annotations
 	 * stranded at the old location.
 	 *
@@ -141,7 +141,7 @@ export const DEFAULT_COLOR_SLOTS: AnnotationColorSlot[] = [
 ];
 
 export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
-	dataPath: "99_assets/plugin-data/margin-note",
+	dataPath: ".annotations-everywhere",
 	syncAnnotationProperty: false,
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
 	mobileSelectionPalette: false,

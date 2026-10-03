@@ -52,14 +52,16 @@ interface FileRevision {
 }
 
 const FILE_NAME = "annotations.json";
+const CURRENT_DEFAULT_FILE = ".annotations-everywhere/annotations.json";
 const PREVIOUS_DEFAULT_FILE = ".margin-notes-hz/annotations.json";
 const PORTABLE_DEFAULT_FILE = "99_assets/plugin-data/margin-note/annotations.json";
+const LEGACY_DEFAULT_FILES = [PORTABLE_DEFAULT_FILE, PREVIOUS_DEFAULT_FILE] as const;
 
 /**
  * Resolves the user's configured path to an actual file path. A value ending in
  * `.json` is used as-is; anything else is treated as a folder to put the file
  * in — writing a literal extension-less file is never what someone typing
- * `99_assets/plugin-data/margin-note` means.
+ * `.annotations-everywhere` means.
  */
 export function resolveDataFilePath(configured: string): string {
 	const p = normalizePath(configured.trim().replace(/\/+$/, ""));
@@ -349,6 +351,13 @@ export class PdfAnnotationStore {
 		// Plugin settings may not have reached a second device yet. Only upgrade
 		// the old default when its own file is absent; never override an explicit
 		// custom path or a real file at the old location.
+		if (this.path === CURRENT_DEFAULT_FILE && !(await adapter.exists(this.path))) {
+			for (const legacyFile of LEGACY_DEFAULT_FILES) {
+				if (!(await adapter.exists(legacyFile))) continue;
+				this.path = legacyFile;
+				break;
+			}
+		}
 		if (this.path === PREVIOUS_DEFAULT_FILE && !(await adapter.exists(this.path)) &&
 			(await adapter.exists(PORTABLE_DEFAULT_FILE))) this.path = PORTABLE_DEFAULT_FILE;
 		const folder = this.path.slice(0, this.path.lastIndexOf("/"));
@@ -386,7 +395,7 @@ export class PdfAnnotationStore {
 			} catch {
 				// A corrupt/hand-edited file must not silently wipe itself on the next
 				// save — refuse to load rather than starting from an empty object.
-				throw new Error(`margin-notes-hz: 批注文件解析失败,请检查 ${this.path}`);
+				throw new Error(`annotations-everywhere: 批注文件解析失败,请检查 ${this.path}`);
 			}
 			const migrated = this.adopt(parsed);
 			if (migrated) await this.flush();
@@ -423,15 +432,15 @@ export class PdfAnnotationStore {
 		if (this.editedSinceLoad || this.totalAnnotationCount > 0 || Object.keys(this.pairs).length > 0 ||
 			Object.keys(this.manualOutlines).length > 0) return false;
 		const adapter = this.app.vault.adapter;
-		const portableFallback = this.path === PREVIOUS_DEFAULT_FILE && candidatePath === PORTABLE_DEFAULT_FILE;
-		if (candidatePath !== this.path && !portableFallback) return false;
-		if (portableFallback && (await adapter.exists(this.path))) return false;
+		const defaultFallback = this.isLateSyncedFileCandidate(candidatePath) && candidatePath !== this.path;
+		if (candidatePath !== this.path && !defaultFallback) return false;
+		if (defaultFallback && (await adapter.exists(this.path))) return false;
 		if (!candidatePath || !(await adapter.exists(candidatePath))) return false;
 		let parsed: Partial<FileShape>;
 		try {
 			parsed = JSON.parse(await adapter.read(candidatePath)) as Partial<FileShape>;
 		} catch {
-			throw new Error(`margin-notes-hz: 同步的批注文件解析失败,请检查 ${candidatePath}`);
+			throw new Error(`annotations-everywhere: 同步的批注文件解析失败,请检查 ${candidatePath}`);
 		}
 		if (this.editedSinceLoad || this.totalAnnotationCount > 0) return false;
 		if (!parsed.pdfAnnotations || typeof parsed.pdfAnnotations !== "object") return false;
@@ -440,6 +449,13 @@ export class PdfAnnotationStore {
 		if (migrated) await this.flush();
 		this.notify();
 		return true;
+	}
+
+	/** Accept a delayed sync copy from a pre-rename default without treating an arbitrary file as data. */
+	isLateSyncedFileCandidate(candidatePath: string): boolean {
+		if (candidatePath === this.path) return true;
+		if (this.path === CURRENT_DEFAULT_FILE) return LEGACY_DEFAULT_FILES.includes(candidatePath as typeof LEGACY_DEFAULT_FILES[number]);
+		return this.path === PREVIOUS_DEFAULT_FILE && candidatePath === PORTABLE_DEFAULT_FILE;
 	}
 
 	/** Moves the backing file when the configured path changes. */
@@ -464,7 +480,7 @@ export class PdfAnnotationStore {
 				throw new Error(`目标批注文件解析失败，未覆盖：${next}`);
 			}
 			if (!parsed.pdfAnnotations || typeof parsed.pdfAnnotations !== "object") {
-				throw new Error(`目标不是 Margin Notes 批注文件，未覆盖：${next}`);
+				throw new Error(`目标不是 Annotations Everywhere 批注文件，未覆盖：${next}`);
 			}
 			this.path = next;
 			const migrated = this.adopt(parsed);

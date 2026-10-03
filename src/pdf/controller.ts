@@ -155,11 +155,10 @@ export class PdfAnnotationsController {
 			this.annotationPropertySync.queue();
 		}));
 		const queueLateSync = (file: { path: string }): void => {
-			const oldDefaultReceivingPortableFile = this.store.filePath === ".margin-notes-hz/annotations.json" &&
-				file.path === resolveDataFilePath(DEFAULT_PDF_ANNOTATION_SETTINGS.dataPath);
+			const defaultDataFile = this.store.isLateSyncedFileCandidate(file.path);
 			const dataFolder = this.store.filePath.slice(0, this.store.filePath.lastIndexOf("/"));
 			const revisionFile = file.path.startsWith(`${dataFolder}/revisions/`);
-			if (file.path !== this.store.filePath && !oldDefaultReceivingPortableFile && !revisionFile) return;
+			if (!defaultDataFile && !revisionFile) return;
 			if (this.lateSyncTimer !== null) window.clearTimeout(this.lateSyncTimer);
 			this.lateSyncTimer = window.setTimeout(() => {
 				this.lateSyncTimer = null;

@@ -8,7 +8,7 @@ export class AnnotationRevisionMigrationModal extends Modal {
 		this.contentEl.empty();
 		this.contentEl.createEl("h3", { text: "改用分文件批注" });
 		this.contentEl.createEl("p", { text: `当前载入 ${this.store.totalAnnotationCount} 条批注。迁移会把现有批注拆成独立记录文件，并在校验成功后删除旧 annotations.json。之后每次修改各写一份独立修订。` });
-		this.contentEl.createEl("p", { text: "请先让电脑和手机同步完成，并在另一设备关闭旧版 Margin Notes。旧版插件若继续写 annotations.json，会造成两个数据源分叉。迁移后不要直接用旧版插件编辑。" });
+		this.contentEl.createEl("p", { text: "请先让电脑和手机同步完成，并在另一设备关闭旧版插件。旧版插件若继续写 annotations.json，会造成两个数据源分叉。迁移后不要直接用旧版插件编辑。" });
 		let confirmed = false;
 		let migrateButton: HTMLButtonElement;
 		new Setting(this.contentEl)

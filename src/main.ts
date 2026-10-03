@@ -12,7 +12,7 @@ import { PdfAnnotationsController, type NewNoteForm } from "./pdf/controller";
 import { PairPickerModal } from "./pdf/pair-picker";
 import { AnnotationRevisionConflictModal, AnnotationRevisionMigrationModal } from "./pdf/annotation-revision-modal";
 
-export default class MarginNotesPlugin extends Plugin {
+export default class AnnotationsEverywherePlugin extends Plugin {
 	private pdfAnnotations!: PdfAnnotationsController;
 	private markdownMargin = normalizeMarkdownMarginSettings(undefined);
 	private markdownMarginListeners = new Set<(settings: MarkdownMarginSettings) => void>();

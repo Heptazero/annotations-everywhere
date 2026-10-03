@@ -102,7 +102,7 @@ export async function readPdfLayout(app: App, file: TFile): Promise<PageLayout[]
 		}
 		return pages;
 	} catch (error) {
-		console.warn(`margin-notes-hz: layout check failed for ${file.path}`, error);
+		console.warn(`annotations-everywhere: layout check failed for ${file.path}`, error);
 		return null;
 	} finally {
 		void doc?.destroy();

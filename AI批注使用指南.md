@@ -1,9 +1,10 @@
-# Margin Notes AI 批注使用指南
+# Annotations Everywhere AI 批注使用指南
 
 ## 1. 适用场景
 
-让 AI 阅读中文翻译 PDF，选择值得解释的原文片段，并把批注追加到
-`99_assets/plugin-data/margin-note/annotations.json`。PDF 文件本身不会被修改。
+让 AI 阅读中文翻译 PDF，选择值得解释的原文片段，并把批注追加到插件设置显示的
+「实际文件」中；新安装默认为 `.annotations-everywhere/annotations.json`。自定义过数据目录时，
+以设置页显示的路径为准。PDF 文件本身不会被修改。
 
 原文、中文译文或其他译本已经加入同一个共享批注组时，批注只保存一份；组内 PDF 复用同一套
 页码和坐标。
@@ -11,7 +12,7 @@
 ## 2. 开始前必须确认
 
 1. 共享检查必须通过：页数相同、每页宽高差不超过 1pt、每页旋转一致。
-2. 停用 `Margin Notes (hz)`，避免插件内存中的旧数据覆盖 AI 的写入。
+2. 停用 `Annotations Everywhere`，避免插件内存中的旧数据覆盖 AI 的写入。
 3. 给 AI 提供：
    - 中文 PDF 的准确库内路径；
    - 批注范围，例如“全文”“第 1–3 页”“方法部分”；

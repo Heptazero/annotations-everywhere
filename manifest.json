@@ -1,9 +1,10 @@
 {
-	"id": "margin-notes-hz",
-	"name": "Margin Notes (hz)",
-	"version": "0.49.0",
+	"id": "annotations-everywhere",
+	"name": "Annotations Everywhere",
+	"version": "0.50.0",
 	"minAppVersion": "1.5.8",
-	"description": "Footnote definitions rendered as an editable right-margin sidenote, scroll-synced with the main text, with collision avoidance for closely-spaced references. Also supports floating and side-margin annotations anchored to PDF selections.",
+	"description": "Add editable Markdown sidenotes and PDF annotations with shared documents, searchable layers, manual outlines, and mobile-friendly controls.",
 	"author": "heptazero",
+	"authorUrl": "https://github.com/Heptazero",
 	"isDesktopOnly": false
 }
