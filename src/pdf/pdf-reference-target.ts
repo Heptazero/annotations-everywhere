@@ -1,5 +1,6 @@
 import type { PdfRect } from "./pdf-layer";
 import type { Selection } from "./selection-geom";
+import { configuredReferenceCopy } from "./pdf-reference-preferences";
 
 export type PdfReferenceTarget = { page: number; rect?: PdfRect; selection?: Selection };
 export interface StoredTextSelection { pdfPath: string; page: number; range: Selection }
@@ -58,7 +59,5 @@ export function targetForAnnotation(pdfPath: string, ann: { page: number; anchor
 }
 
 export function formatPdfReferenceCopy(link: string, quote: string | undefined, mode: "link" | "quote"): string {
-	if (mode === "link" || !quote?.trim()) return link;
-	// Text stays outside the alias, so Markdown/LaTeX is not turned into literal link text.
-	return `${quote.trim().split(/\r?\n/).map((line) => `> ${line}`).join("\n")}\n> ${link}`;
+	return configuredReferenceCopy({}, mode, link, quote, "", 1);
 }

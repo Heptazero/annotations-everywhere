@@ -4,6 +4,7 @@ import "./color-groups.test";
 import "./annotation-layers.test";
 import "./annotation-form.test";
 import "./pdf-reference.test";
+import "./pdf-reference-preferences.test";
 import "./reading-order.test";
 import "./markdown-margin.test";
 import "./mark-click.test";

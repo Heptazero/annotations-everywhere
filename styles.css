@@ -1097,6 +1097,38 @@
 	opacity: calc(var(--margin-notes-pdf-highlight-opacity, 0.3) * 1.6);
 }
 
+.margin-notes-pdf-anchor-band.is-referenced-underline,
+.margin-notes-pdf-anchor-band.is-referenced-box {
+	background: transparent;
+	box-sizing: border-box;
+	opacity: 0.9;
+	border-radius: 0;
+}
+.margin-notes-pdf-anchor-band.is-referenced-underline {
+	border-bottom: 2px solid var(--margin-notes-pdf-note-color, var(--interactive-accent));
+}
+.margin-notes-pdf-anchor-band.is-referenced-box {
+	border: 1px solid var(--margin-notes-pdf-note-color, var(--interactive-accent));
+}
+.margin-notes-pdf-layer button.margin-notes-pdf-reference-indicator {
+	position: absolute;
+	display: grid;
+	place-items: center;
+	pointer-events: auto;
+	width: 24px;
+	height: 24px;
+	padding: 3px;
+	transform: translateY(-50%);
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.margin-notes-pdf-reference-indicator svg { width: 15px; height: 15px; }
+.margin-notes-pdf-layer button.margin-notes-pdf-reference-indicator:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.margin-notes-pdf-reference-summary { padding: 2px 4px 6px; color: var(--text-muted); font-size: var(--font-smaller); }
+
 /* The lit-up state, applied identically whether the pointer is on the note or on
    its text — one relationship, one appearance. The outline is a DARKER shade of
    the note's own colour (annotation-settings.ts's darken(), pushed in as
@@ -1219,6 +1251,47 @@
 	flex-wrap: wrap;
 	gap: 6px;
 	margin: -6px 0 18px;
+}
+
+/* Adapted from settings-ui-showcase: flat dividers, compact tabs, no demo features. */
+.margin-notes-settings-root { max-width: 900px; min-width: 0; }
+.margin-notes-settings-search { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--background-modifier-border); }
+.margin-notes-settings-search > span { display: inline-flex; color: var(--text-muted); }
+.margin-notes-settings-search svg { width: 17px; height: 17px; }
+.margin-notes-settings-root .margin-notes-settings-search input[type="search"] { flex: 1; min-width: 0; border: 0; background: transparent; box-shadow: none; }
+.margin-notes-settings-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--background-modifier-border); }
+.margin-notes-settings-root .margin-notes-settings-tabs button { flex-shrink: 0; min-height: 40px; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; box-shadow: none; color: var(--text-muted); }
+.margin-notes-settings-root .margin-notes-settings-tabs button[aria-selected="true"] { border-bottom-color: var(--interactive-accent); color: var(--text-normal); font-weight: 600; }
+.margin-notes-settings-section { margin: 0; border-bottom: 1px solid var(--background-modifier-border); }
+.margin-notes-settings-section > summary { display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; list-style: none; }
+.margin-notes-settings-section > summary::-webkit-details-marker { display: none; }
+.margin-notes-settings-section > summary::before { content: ""; flex: 0 0 7px; height: 7px; border-right: 1.5px solid var(--text-muted); border-bottom: 1.5px solid var(--text-muted); transform: rotate(-45deg); }
+.margin-notes-settings-section[open] > summary::before { transform: rotate(45deg); }
+.margin-notes-settings-section > summary > .setting-item { flex: 1; border: 0; padding-block: 8px; margin: 0; }
+.margin-notes-settings-section-body { padding: 0 0 12px 20px; }
+.margin-notes-settings-root .setting-item-info { min-width: 0; }
+.margin-notes-settings-root .setting-item-control { flex-wrap: wrap; min-width: 0; }
+.margin-notes-settings-root button.clickable-icon { border: 0; background: transparent; box-shadow: none; }
+.margin-notes-settings-root .setting-item:first-child { border-top: 0; }
+.margin-notes-settings-segmented { display: flex; flex-wrap: wrap; gap: 2px; border-radius: 5px; background: var(--background-secondary); padding: 2px; }
+.margin-notes-settings-root .margin-notes-settings-segmented button { border: 0; box-shadow: none; padding: 5px 9px; background: transparent; color: var(--text-muted); }
+.margin-notes-settings-root .margin-notes-settings-segmented button[aria-pressed="true"] { background: var(--background-modifier-hover); color: var(--text-normal); }
+.margin-notes-settings-root button.margin-notes-settings-choice { border: 0; background: transparent; box-shadow: none; white-space: normal; text-align: right; max-width: 330px; }
+.margin-notes-settings-root .margin-notes-settings-template { flex-direction: column; align-items: stretch; gap: 8px; }
+.margin-notes-settings-template .setting-item-control { width: 100%; }
+.margin-notes-settings-template textarea { flex: 1; min-width: 0; resize: vertical; font-family: var(--font-monospace); }
+.margin-notes-settings-reference-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; background: transparent; padding: 8px 0; margin: 0; font-family: var(--font-monospace); font-size: var(--font-smaller); }
+.margin-notes-settings-reference-preview .is-error { color: var(--text-error); }
+.margin-notes-settings-root [hidden] { display: none; }
+@media (max-width: 600px) {
+	.margin-notes-settings-section-body { padding-left: 12px; }
+	.margin-notes-settings-root .setting-item { flex-wrap: wrap; gap: 8px; }
+	.margin-notes-settings-root .setting-item-control { max-width: 100%; }
+	.margin-notes-settings-root button.margin-notes-settings-choice { max-width: 100%; text-align: left; }
+}
+@media (pointer: coarse) {
+	.margin-notes-pdf-layer button.margin-notes-pdf-reference-indicator { width: 32px; height: 32px; }
+	.margin-notes-settings-root .margin-notes-settings-segmented button { min-height: 36px; }
 }
 
 .margin-notes-annotation-property-preview {

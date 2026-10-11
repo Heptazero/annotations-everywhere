@@ -6,6 +6,7 @@ import {
 	type AnnotationLayerDefinition,
 } from "./annotation-layers";
 import { DEFAULT_ANNOTATION_PROPERTY, normalizeAnnotationPropertyName } from "./source-annotation-sync";
+import { DEFAULT_REFERENCE_PREFERENCES, normalizeReferencePreferences, type PdfReferencePreferences } from "./pdf-reference-preferences";
 
 export interface AnnotationColorSlot {
 	/** Stable storage key. Names and colour values may change without touching notes. */
@@ -14,7 +15,7 @@ export interface AnnotationColorSlot {
 	color: string;
 }
 
-export interface PdfAnnotationSettings {
+export interface PdfAnnotationSettings extends PdfReferencePreferences {
 	/**
 	 * Where the annotations JSON lives, vault-relative. A path with no `.json`
 	 * suffix is treated as a FOLDER and the file goes inside it — that's what a
@@ -149,6 +150,7 @@ export const DEFAULT_COLOR_SLOTS: AnnotationColorSlot[] = [
 ];
 
 export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
+	...DEFAULT_REFERENCE_PREFERENCES,
 	dataPath: ".annotations-everywhere",
 	syncAnnotationProperty: false,
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
@@ -204,6 +206,7 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 	return {
 		...DEFAULT_PDF_ANNOTATION_SETTINGS,
 		...raw,
+		...normalizeReferencePreferences(raw),
 		syncAnnotationProperty: raw.syncAnnotationProperty === true,
 		annotationPropertyName: normalizeAnnotationPropertyName(raw.annotationPropertyName),
 		mobileSelectionPalette: raw.mobileSelectionPalette === true,

@@ -38,6 +38,7 @@ import { sortAnnotationsForReading } from "./reading-order";
 import { SharedFileLifecycle } from "./shared-file-lifecycle";
 import { SourceAnnotationSync } from "./source-annotation-sync";
 import { PdfReferenceService } from "./pdf-reference-service";
+import type { PdfReferenceCopyMode } from "./pdf-reference-preferences";
 import { validPdfRect, type PdfReferenceTarget, type StoredTextSelection } from "./pdf-reference-target";
 import { computeSelectionRects, type Selection } from "./selection-geom";
 import { unionRect } from "./annotation-anchor";
@@ -352,7 +353,7 @@ export class PdfAnnotationsController {
 		return undefined;
 	}
 
-	copySelectionReference(mode: "link" | "quote" = "link"): void {
+	copySelectionReference(mode: PdfReferenceCopyMode = "link"): void {
 		const selected = anchorFromActiveSelection();
 		if (!selected) { new Notice("先在 PDF 上选中文字；已有勾画可从菜单复制引用"); return; }
 		void this.references.copy(selected.file.path, { page: selected.pageNumber, rect: selected.rect, selection: selected.selection }, window.getSelection()?.toString(), mode);

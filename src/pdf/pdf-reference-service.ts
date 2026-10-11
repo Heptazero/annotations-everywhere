@@ -5,7 +5,9 @@ import { PdfReferenceIndex, type PdfReferenceSource } from "./pdf-reference-inde
 import { openPdfReferencePicker } from "./pdf-reference-picker";
 import { registerPdfReferenceLinkOpen } from "./pdf-reference-link-open";
 import { resolveReferenceRegions, type PdfReferenceRegion } from "./pdf-reference-regions";
-import { buildPdfReferenceSubpath, formatPdfReferenceCopy, samePdfRegion, targetForAnnotation, validPdfRect, type PdfReferenceTarget } from "./pdf-reference-target";
+import { buildPdfReferenceSubpath, samePdfRegion, targetForAnnotation, validPdfRect, type PdfReferenceTarget } from "./pdf-reference-target";
+import { configuredReferenceCopy, normalizeReferencePreferences, renderReferenceTemplate, type PdfReferenceCopyMode } from "./pdf-reference-preferences";
+import { referenceSourceCounts } from "./pdf-reference-decoration";
 import { computeSelectionRects } from "./selection-geom";
 import type { PDFPageView } from "./pdfjs-types";
 
@@ -53,26 +55,30 @@ export class PdfReferenceService {
 		});
 	}
 
-	async copy(pdfPath: string, target: PdfReferenceTarget, quote?: string, mode: "link" | "quote" = "link"): Promise<void> {
+	async copy(pdfPath: string, target: PdfReferenceTarget, quote?: string, mode?: PdfReferenceCopyMode): Promise<void> {
 		try {
 			const file = this.app.vault.getAbstractFileByPath(pdfPath);
 			if (!(file instanceof TFile) || file.extension !== "pdf") throw new Error("引用的 PDF 不存在");
 			const subpath = buildPdfReferenceSubpath(target);
-			const link = this.app.fileManager.generateMarkdownLink(file, "", subpath, `p. ${target.page}`);
-			await navigator.clipboard.writeText(formatPdfReferenceCopy(link, quote, mode));
-			new Notice(mode === "quote" && quote?.trim() ? "已复制引文及引用链接" : "已复制引用链接");
+			const preferences = normalizeReferencePreferences(this.host.settings());
+			const chosenMode = mode ?? preferences.pdfReferenceCopyMode;
+			const label = renderReferenceTemplate(preferences.pdfReferenceLinkLabel, { file: file.basename, page: String(target.page) });
+			const link = this.app.fileManager.generateMarkdownLink(file, "", subpath, label || undefined);
+			await navigator.clipboard.writeText(configuredReferenceCopy(preferences, chosenMode, link, quote, file.basename, target.page));
+			new Notice(chosenMode !== "link" && quote?.trim() ? "已复制引文及引用链接" : "已复制引用链接");
 		} catch (error) { new Notice(error instanceof Error ? error.message : "复制失败，请检查剪贴板权限"); }
 	}
 
-	copyAnnotation(pdfPath: string, ann: PdfAnnotation, mode: "link" | "quote" = "link"): void {
+	copyAnnotation(pdfPath: string, ann: PdfAnnotation, mode?: PdfReferenceCopyMode): void {
 		void this.copy(pdfPath, targetForAnnotation(pdfPath, ann), ann.quote, mode);
 	}
 
 	appendMenu(menu: Menu, pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
-		menu.addItem((item) => item.setTitle("复制引用链接").setIcon("link").onClick(() => this.copyAnnotation(pdfPath, ann)));
+		menu.addItem((item) => item.setTitle("复制引用链接").setIcon("link").onClick(() => this.copyAnnotation(pdfPath, ann, "link")));
+		menu.addItem((item) => item.setTitle("复制单行引文及链接").setIcon("text").setDisabled(!ann.quote?.trim()).onClick(() => this.copyAnnotation(pdfPath, ann, "inline")));
 		menu.addItem((item) => item.setTitle("复制引文及链接").setIcon("quote").setDisabled(!ann.quote?.trim()).onClick(() => this.copyAnnotation(pdfPath, ann, "quote")));
-		const count = this.sources(pdfPath, ann).length;
-		if (count) menu.addItem((item) => item.setTitle(`引用此处的笔记 (${count})`).setIcon("corner-up-left").onClick(() => this.showSources(pdfPath, ann, at)));
+		const counts = referenceSourceCounts(this.sources(pdfPath, ann));
+		if (counts.references) menu.addItem((item) => item.setTitle(`引用情况（${counts.notes} 篇笔记 · ${counts.references} 处）`).setIcon("corner-up-left").onClick(() => this.showSources(pdfPath, ann, at)));
 	}
 
 	openMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
@@ -82,13 +88,12 @@ export class PdfReferenceService {
 	showSources(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		const refs = this.sources(pdfPath, ann);
 		if (!refs.length) { new Notice("没有笔记引用此处；粘贴链接后等待索引更新"); return; }
-		if (refs.length === 1) { void this.openSource(pdfPath, refs[0]); return; }
 		for (const close of [...this.pickers]) close();
 		const close = openPdfReferencePicker(this.app, refs, at, (ref) => void this.openSource(pdfPath, ref), () => this.pickers.delete(close));
 		this.pickers.add(close);
 	}
 
-	private async openSource(pdfPath: string, ref: PdfReferenceSource): Promise<void> {
+	async openSource(pdfPath: string, ref: PdfReferenceSource): Promise<void> {
 		const current = this.index.forPdf(pdfPath).filter((item) => item.sourcePath === ref.sourcePath && item.link === ref.link)
 			.sort((a, b) => Math.abs(a.line - ref.line) - Math.abs(b.line - ref.line))[0];
 		const file = current ? this.app.vault.getAbstractFileByPath(current.sourcePath) : null;

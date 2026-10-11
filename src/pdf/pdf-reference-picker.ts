@@ -1,10 +1,13 @@
 import { Scope, prepareFuzzySearch, type App } from "obsidian";
 import { TEXT_EDITOR_NAVIGATION_KEYS } from "./editor-key-scope";
 import type { PdfReferenceSource } from "./pdf-reference-index";
+import { referenceSourceCounts } from "./pdf-reference-decoration";
 
 /** Anchored, searchable source list; callers own cleanup when the plugin unloads. */
 export function openPdfReferencePicker(app: App, refs: PdfReferenceSource[], at: { x: number; y: number }, onChoose: (ref: PdfReferenceSource) => void, onClose: () => void): () => void {
 	const el = document.body.createDiv({ cls: "margin-notes-pdf-reference-picker", attr: { role: "dialog", "aria-label": "引用此处的笔记" } });
+	const counts = referenceSourceCounts(refs);
+	el.createDiv({ cls: "margin-notes-pdf-reference-summary", text: `${counts.notes} 篇笔记 · ${counts.references} 处引用` });
 	const search = el.createEl("input", { attr: { type: "search", placeholder: "搜索引用笔记…", "aria-label": "搜索引用笔记" } });
 	const results = el.createDiv("margin-notes-pdf-reference-results");
 	let closed = false;

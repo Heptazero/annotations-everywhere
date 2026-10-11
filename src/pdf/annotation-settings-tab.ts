@@ -13,9 +13,12 @@ import { LayerDeleteModal } from "./layer-delete-modal";
 import { AnnotationPropertySyncModal } from "./annotation-property-sync-modal";
 import { normalizeAnnotationPropertyName } from "./source-annotation-sync";
 import { renderColorGroupSettings } from "./color-group-settings";
+import { createSettingsLayout, renderSettingChoice, type SettingsLayoutState } from "./settings-layout";
+import { renderReferenceSettings } from "./pdf-reference-settings";
 
 export class PdfAnnotationSettingTab extends PluginSettingTab {
 	private folderPathSuggest: FolderPathSuggest | null = null;
+	private layoutState: SettingsLayoutState = { page: "common", open: {} };
 
 	constructor(
 		app: App,
@@ -38,11 +41,20 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 			layers: this.controller.settings.layers.map((layer) => ({ ...layer })),
 		};
 		const commit = () => void this.controller.saveSettings(settings);
-
-		new Setting(containerEl).setName("批注数据").setHeading();
+		const layout = createSettingsLayout(containerEl, this.layoutState);
+		const selectionSection = layout.section("selection", "划词工具栏", "common");
+		const colorSection = layout.section("colors", "颜色与语义组", "common");
+		const referenceSection = layout.section("references", "引用标记", "references");
+		const templateSection = layout.section("templates", "复制格式", "references");
+		const railsSection = layout.section("rails", "左右轨道", "appearance");
+		const appearanceSection = layout.section("notes", "批注外观", "appearance");
+		const highlightSection = layout.section("highlights", "普通批注高亮", "appearance");
+		const dataSection = layout.section("data", "批注数据", "management");
+		const syncSection = layout.section("sync", "笔记属性同步", "management");
+		const layerSection = layout.section("layers", "批注图层", "management");
 		let pendingDataPath = settings.dataPath;
 
-		const pathSetting = new Setting(containerEl)
+		const pathSetting = new Setting(dataSection)
 			.setName("批注存放位置")
 			.setDesc(
 				"搜索并选择库内文件夹，也可以填写新文件夹路径；电脑和手机须一致。" +
@@ -109,14 +121,14 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		};
 		void refreshDataStatus();
 
-		new Setting(containerEl)
+		new Setting(selectionSection)
 			.setName("手机划词后显示批注工具栏")
 			.setDesc("选中文字后显示一排预设颜色和添加批注按钮。颜色在下方「预设颜色」中设置；关闭工具栏不会保存。")
 			.addToggle((toggle) => toggle.setValue(settings.mobileSelectionPalette).onChange((value) => {
 				settings.mobileSelectionPalette = value;
 				commit();
 			}));
-		new Setting(containerEl)
+		new Setting(selectionSection)
 			.setName("电脑划词后显示批注工具栏")
 			.setDesc("鼠标选中文字或用键盘调整选区后，显示与手机相同的工具栏。")
 			.addToggle((toggle) => toggle.setValue(settings.desktopSelectionPalette).onChange((value) => {
@@ -124,11 +136,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				commit();
 			}));
 
-		new Setting(containerEl).setName("显示 PDF 引用勾画")
-			.setDesc("从笔记里的 PDF 链接显示引用位置，与批注共用显示层，不另存批注。若同时使用 everything bilink，只开启一边的引用勾画以免重复。")
-			.addToggle((toggle) => toggle.setValue(settings.pdfReferenceHighlights).onChange((value) => {
-				settings.pdfReferenceHighlights = value; commit();
-			}));
+		renderReferenceSettings(referenceSection, templateSection, settings, commit);
 
 		const previewSync = (enableAfterConfirm: boolean): void => {
 			const property = normalizeAnnotationPropertyName(settings.annotationPropertyName);
@@ -164,7 +172,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 			).open();
 		};
 
-		new Setting(containerEl)
+		new Setting(syncSection)
 			.setName("同步批注状态到 source 笔记")
 			.setDesc("只按 Markdown 的 source 双链查找 PDF。有批注时写入 true；最后一条批注删除后移除属性。首次开启会先预览全部改动。")
 			.addToggle((toggle) => {
@@ -180,7 +188,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				});
 			});
 
-		new Setting(containerEl)
+		new Setting(syncSection)
 			.setName("批注属性名")
 			.setDesc(settings.syncAnnotationProperty ? "关闭自动同步后才能修改属性名。" : "布尔属性；默认 has_annotations。")
 			.addText((text) =>
@@ -206,7 +214,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					.onClick(() => previewSync(false))
 			);
 
-		const layerHeader = new Setting(containerEl)
+		const layerHeader = new Setting(layerSection)
 			.setName("批注图层")
 			.setDesc("一条批注可同时属于多个图层；正文只保存一份，在任何图层修改都会同步。")
 			.addButton((button) =>
@@ -223,7 +231,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				})
 			);
 		layerHeader.controlEl.addClass("margin-notes-pdf-palette-add");
-		const layerRows = containerEl.createDiv("margin-notes-pdf-layer-settings");
+		const layerRows = layerSection.createDiv("margin-notes-pdf-layer-settings");
 		const renderLayerRows = () => {
 			layerRows.empty();
 			settings.layers.forEach((layer, index) => {
@@ -277,9 +285,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		};
 		renderLayerRows();
 
-		new Setting(containerEl).setName("外观").setHeading();
-
-		containerEl.createEl("p", {
+		railsSection.createEl("p", {
 			cls: "setting-item-description",
 			text:
 				"「固定」的批注不是自己记住位置,而是排在页面左右两条轨道里——所以轨道的宽度和" +
@@ -287,9 +293,9 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				"(100% 缩放时的像素),会跟着页面一起缩放,不会因为你放大缩小而变形。",
 		});
 
-		new Setting(containerEl).setName("左侧轨道").setHeading();
+		new Setting(railsSection).setName("左侧轨道").setHeading();
 
-		new Setting(containerEl)
+		new Setting(railsSection)
 			.setName("轨道宽度")
 			.setDesc("左侧所有固定批注的宽度。也可以直接拖批注框远离页面那一侧的边。")
 			.addSlider((s) =>
@@ -303,7 +309,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+		new Setting(railsSection)
 			.setName("轨道离页面的距离")
 			.setDesc("负数会把轨道压到页面上。也可以直接拖批注框朝向页面那一侧的边。")
 			.addSlider((s) =>
@@ -317,9 +323,9 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl).setName("右侧轨道").setHeading();
+		new Setting(railsSection).setName("右侧轨道").setHeading();
 
-		new Setting(containerEl)
+		new Setting(railsSection)
 			.setName("轨道宽度")
 			.setDesc("右侧所有固定批注的宽度。也可以直接拖批注框远离页面那一侧的边。")
 			.addSlider((s) =>
@@ -333,7 +339,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+		new Setting(railsSection)
 			.setName("轨道离页面的距离")
 			.setDesc("负数会把轨道压到页面上。也可以直接拖批注框朝向页面那一侧的边。")
 			.addSlider((s) =>
@@ -347,7 +353,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+		new Setting(appearanceSection)
 			.setName("基准字号(px)")
 			.setDesc("100% 缩放时的字号,所有批注都以此为基准跟着 PDF 一起缩放。单条批注可以用它自己的菜单再单独调。")
 			.addSlider((s) =>
@@ -361,7 +367,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+		new Setting(appearanceSection)
 			.setName("不透明度(%)")
 			.setDesc("鼠标悬停或编辑时始终不透明。")
 			.addSlider((s) =>
@@ -375,7 +381,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+		new Setting(appearanceSection)
 			.setName("收起点直径(px)")
 			.setDesc("批注收起后圆点的屏幕直径。PDF 放大或缩小时保持不变。")
 			.addSlider((s) =>
@@ -389,27 +395,21 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl).setName("高亮").setHeading();
-
-		containerEl.createEl("p", {
+		highlightSection.createEl("p", {
 			cls: "setting-item-description",
 			text:
 				"高亮指的是批注在原文上对应的那一段文字/区域。高亮的颜色跟随批注自己的颜色," +
 				"所以同一页上有多条批注时,一眼就能看出哪条对应哪段。",
 		});
 
-		new Setting(containerEl)
+		const highlightChoice = new Setting(highlightSection)
 			.setName("显示方式")
-			.setDesc("也可以用命令面板里的「切换高亮显示方式」随时改。")
-			.addDropdown((d) => {
-				for (const [value, label] of Object.entries(HIGHLIGHT_MODE_LABELS)) d.addOption(value, label);
-				d.setValue(settings.highlightMode).onChange((v) => {
-					settings.highlightMode = v as HighlightMode;
-					commit();
-				});
-			});
+			.setDesc("也可以用命令面板里的「切换高亮显示方式」随时改。");
+		renderSettingChoice<HighlightMode>(highlightChoice.controlEl, "高亮显示方式", (Object.entries(HIGHLIGHT_MODE_LABELS) as [HighlightMode, string][]).map(([value, label]) => ({ value, label })), settings.highlightMode, (value) => {
+			settings.highlightMode = value; commit();
+		});
 
-		new Setting(containerEl)
+		new Setting(highlightSection)
 			.setName("高亮不透明度(%)")
 			.setDesc("只影响原文上的色块和指示线,不影响批注本身的不透明度。")
 			.addSlider((s) =>
@@ -423,21 +423,22 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		renderColorGroupSettings(containerEl, this.app, settings, commit);
+		renderColorGroupSettings(colorSection, this.app, settings, commit);
 
-		new Setting(containerEl).setName("轨道批注颜色").addColorPicker((c) =>
+		new Setting(colorSection).setName("轨道批注颜色").addColorPicker((c) =>
 			c.setValue(settings.railColor).onChange((v) => {
 				settings.railColor = v;
 				commit();
 			})
 		);
 
-		new Setting(containerEl).setName("自由批注颜色").addColorPicker((c) =>
+		new Setting(colorSection).setName("自由批注颜色").addColorPicker((c) =>
 			c.setValue(settings.freeColor).onChange((v) => {
 				settings.freeColor = v;
 				commit();
 			})
 		);
+		layout.refresh();
 	}
 
 	hide(): void {

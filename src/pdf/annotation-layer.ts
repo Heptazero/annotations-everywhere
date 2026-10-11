@@ -13,6 +13,7 @@ import { isMarkClick, type MarkPointerStart } from "./mark-click";
 import { openMarkPopover, type MarkPopoverHandle } from "./mark-popover";
 import { openSwatchPicker } from "./swatch-picker";
 import type { PdfReferenceService } from "./pdf-reference-service";
+import { decorateReferenceBands, renderReferenceIndicator } from "./pdf-reference-decoration";
 import { annotationForReferenceRegion, isReferenceAnnotation, materializeReferenceAnnotation, referenceAnnotation, type PdfReferenceRegion } from "./pdf-reference-regions";
 import type { PdfAnnotationStore } from "./annotation-store";
 import { DEFAULT_FREE_WIDTH_PCT, type MarginSide, type PdfAnnotation } from "./annotation-types";
@@ -115,8 +116,7 @@ export class AnnotationLayer {
 	 * either end is being dragged rather than waiting for the debounced rebuild. */
 	private leaders = new Map<string, LeaderParts>();
 	private markPopover: MarkPopoverHandle | null = null;
-	private referenceOnly = new Map<string, PdfReferenceRegion>();
-	private referenceAnchors = new Set<string>();
+	private referencedRegions = new Map<string, PdfReferenceRegion>();
 	private markPointerDown: MarkPointerStart | null = null;
 	private markClickTimer = 0;
 	private cancelPendingMarkClick = (): void => {
@@ -259,8 +259,7 @@ export class AnnotationLayer {
 		this.hoveredAnchorId = null;
 		this.bands.clear();
 		this.leaders.clear();
-		this.referenceOnly.clear();
-		this.referenceAnchors.clear();
+		this.referencedRegions.clear();
 
 		const built: Placed[] = [];
 		const marks: AnchoredAnnotation[] = [];
@@ -288,9 +287,9 @@ export class AnnotationLayer {
 			}
 			for (const region of this.references.regions(pdfPath, pageNumber, pageView)) {
 				const existing = annotationForReferenceRegion(region, annotations);
-				if (existing) { this.referenceAnchors.add(existing.id); continue; }
+				if (existing) { this.referencedRegions.set(existing.id, region); continue; }
 				const ann = referenceAnnotation(pdfPath, region);
-				this.referenceOnly.set(ann.id, region);
+				this.referencedRegions.set(ann.id, region);
 				marks.push({ ann, pageView, rect: region.rect });
 			}
 		}
@@ -1070,7 +1069,7 @@ export class AnnotationLayer {
 		this.markPointerDown = null;
 		if (ev.detail > 1) return;
 		if (!isMarkClick(down, { x: ev.clientX, y: ev.clientY }, window.getSelection()?.toString() ?? "")) return;
-		if ((ev.target as HTMLElement | null)?.closest(".margin-notes-pdf-note, .margin-notes-pdf-dot, .margin-notes-pdf-box")) return;
+		if ((ev.target as HTMLElement | null)?.closest(".margin-notes-pdf-note, .margin-notes-pdf-dot, .margin-notes-pdf-box, .margin-notes-pdf-reference-indicator")) return;
 		const pdfPath = this.last?.pdfPath;
 		const scroller = this.scroller;
 		if (!pdfPath || !scroller) return;
@@ -1086,7 +1085,7 @@ export class AnnotationLayer {
 		this.markClickTimer = window.setTimeout(() => {
 			this.cancelPendingMarkClick();
 			if (window.getSelection()?.toString().trim()) return;
-			if (this.last?.pdfPath !== pdfPath || !this.store.forFile(pdfPath).some((item) => item.id === ann.id) && !this.referenceOnly.has(ann.id)) return;
+			if (this.last?.pdfPath !== pdfPath || !this.store.forFile(pdfPath).some((item) => item.id === ann.id) && !this.referencedRegions.has(ann.id)) return;
 			this.openMarkActions(pdfPath, ann, at);
 		}, 300);
 		document.addEventListener("pointerdown", this.cancelPendingMarkClick, true);
@@ -1196,6 +1195,7 @@ export class AnnotationLayer {
 			parts.knob.remove();
 		}
 		for (const bands of this.bands.values()) for (const band of bands) band.remove();
+		this.layer?.querySelectorAll(".margin-notes-pdf-reference-indicator").forEach((el) => el.remove());
 		this.hitAreas = [];
 		this.bands.clear();
 		this.leaders.clear();
@@ -1217,7 +1217,7 @@ export class AnnotationLayer {
 			const lines = (ann.anchorRects?.length ? ann.anchorRects : [rect]).map((lineRect) => pdfRectInPageBox(pageView, lineRect, box));
 			for (const line of lines) this.hitAreas.push({ ann, el, ...line });
 
-			if (mode === "always" || this.referenceAnchors.has(ann.id)) {
+			if (mode === "always" || this.referencedRegions.has(ann.id)) {
 				const bands = lines.map((line) => {
 					const band = layer.createDiv("margin-notes-pdf-anchor-band");
 					band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));
@@ -1225,6 +1225,7 @@ export class AnnotationLayer {
 					return band;
 				});
 				this.bands.set(ann.id, bands);
+				this.decorateReference(ann, bands, lines[lines.length - 1]);
 			}
 			// A collapsed note should render as exactly one point. Keeping the
 			// leader's draggable endpoint created a second, unexplained dot.
@@ -1252,7 +1253,18 @@ export class AnnotationLayer {
 				bands.push(band);
 			}
 			this.bands.set(ann.id, bands);
+			const lastRect = ann.anchorRects?.[ann.anchorRects.length - 1] ?? rect;
+			this.decorateReference(ann, bands, pdfRectInPageBox(pageView, lastRect, box));
 		}
+	}
+
+	private decorateReference(ann: PdfAnnotation, bands: HTMLElement[], rect: { x1: number; y0: number; y1: number }): void {
+		const region = this.referencedRegions.get(ann.id);
+		const pdfPath = this.last?.pdfPath;
+		if (!region || !pdfPath || !this.layer) return;
+		const settings = this.getSettings();
+		decorateReferenceBands(bands, settings);
+		if (settings.pdfReferenceIndicator) renderReferenceIndicator(this.layer, rect, region.sources, (at) => this.references.showSources(pdfPath, ann, at));
 	}
 
 	/**

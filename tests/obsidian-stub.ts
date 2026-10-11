@@ -83,6 +83,7 @@ export class Notice {
 }
 
 export class Menu {}
+export function setIcon(_element: unknown, _icon: string): void {}
 
 // The native picker UI is exercised by the user, not the headless suite.
 export function prepareFuzzySearch(query: string): (text: string) => { score: number; matches: [number, number][] } | null {

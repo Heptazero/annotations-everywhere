@@ -57,9 +57,9 @@ export default class AnnotationsEverywherePlugin extends Plugin {
 			},
 		});
 
-		for (const mode of ["link", "quote"] as const) this.addCommand({
-			id: mode === "link" ? "pdf-copy-reference" : "pdf-copy-quote-reference",
-			name: mode === "link" ? "[PDF] 复制选区引用链接" : "[PDF] 复制选区引文及链接",
+		for (const mode of ["link", "inline", "quote"] as const) this.addCommand({
+			id: mode === "link" ? "pdf-copy-reference" : mode === "inline" ? "pdf-copy-inline-reference" : "pdf-copy-quote-reference",
+			name: mode === "link" ? "[PDF] 复制选区引用链接" : mode === "inline" ? "[PDF] 复制选区单行引文及链接" : "[PDF] 复制选区引文及链接",
 			checkCallback: (checking) => {
 				const active = this.pdfAnnotations.hasPdfTarget();
 				if (!checking && active) this.pdfAnnotations.copySelectionReference(mode);

@@ -176,8 +176,7 @@ try {
 		links = [link("cn.pdf#page=2&rect=10,20,40,60", 8)];
 		events.get("metadata:changed")?.();
 		assert.equal(service.sources(pdf.path, ann).length, 1);
-		service.showSources(pdf.path, ann, { x: 0, y: 0 });
-		await Promise.resolve(); await Promise.resolve();
+		await service.openSource(pdf.path, service.sources(pdf.path, ann)[0]);
 		assert.deepEqual(sourceOpens[0], ["note.md", { eState: { line: 8 } }]);
 		highlights = false;
 		assert.deepEqual(service.regions(pdf.path, 2, {} as never), []);
