@@ -2,7 +2,6 @@ import { App, Notice, PluginSettingTab, Setting, setIcon, type Plugin } from "ob
 import {
 	DEFAULT_PDF_ANNOTATION_SETTINGS,
 	HIGHLIGHT_MODE_LABELS,
-	makeColorSlotId,
 	type HighlightMode,
 	type PdfAnnotationSettings,
 } from "./annotation-settings";
@@ -13,6 +12,7 @@ import type { PdfAnnotationsController } from "./controller";
 import { LayerDeleteModal } from "./layer-delete-modal";
 import { AnnotationPropertySyncModal } from "./annotation-property-sync-modal";
 import { normalizeAnnotationPropertyName } from "./source-annotation-sync";
+import { renderColorGroupSettings } from "./color-group-settings";
 
 export class PdfAnnotationSettingTab extends PluginSettingTab {
 	private folderPathSuggest: FolderPathSuggest | null = null;
@@ -34,6 +34,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		const settings: PdfAnnotationSettings = {
 			...this.controller.settings,
 			palette: this.controller.settings.palette.map((slot) => ({ ...slot })),
+			colorGroups: this.controller.settings.colorGroups.map((group) => ({ ...group, colorKeys: [...group.colorKeys] })),
 			layers: this.controller.settings.layers.map((layer) => ({ ...layer })),
 		};
 		const commit = () => void this.controller.saveSettings(settings);
@@ -416,83 +417,7 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 					})
 			);
 
-		const paletteHeader = new Setting(containerEl)
-			.setName("命名颜色")
-			.setDesc(
-				"批注保存颜色名称对应的稳定标识。以后修改名称或色值，所有使用它的批注一起更新；" +
-					"用上下箭头调整顺序，批注列表按颜色分组时也采用此顺序。"
-			)
-			.addButton((button) =>
-				button.setButtonText("添加颜色").onClick(() => {
-					settings.palette = [
-						...settings.palette,
-						{
-							id: makeColorSlotId(settings.palette.map((slot) => slot.id)),
-							name: `颜色 ${settings.palette.length + 1}`,
-							color: "#808080",
-						},
-					];
-					commit();
-					renderPaletteRows();
-				})
-			);
-		paletteHeader.controlEl.addClass("margin-notes-pdf-palette-add");
-		const paletteRows = containerEl.createDiv("margin-notes-pdf-palette-settings");
-		const renderPaletteRows = () => {
-			paletteRows.empty();
-			settings.palette.forEach((slot, index) => {
-				const row = new Setting(paletteRows).setName(`颜色 ${index + 1}`);
-				const reorder = row.nameEl.createSpan({ cls: "margin-notes-pdf-palette-reorder" });
-				row.nameEl.prepend(reorder);
-				const addMoveButton = (icon: string, tooltip: string, targetIndex: number) => {
-					const disabled = targetIndex < 0 || targetIndex >= settings.palette.length;
-					const button = reorder.createEl("button", {
-						cls: "clickable-icon margin-notes-pdf-palette-move",
-						attr: { type: "button", "aria-label": tooltip, "aria-disabled": String(disabled) },
-					});
-					setIcon(button, icon);
-					button.disabled = disabled;
-					if (disabled) return;
-					button.addEventListener("click", () => {
-						const next = [...settings.palette];
-						[next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-						settings.palette = next;
-						commit();
-						renderPaletteRows();
-					});
-				};
-				addMoveButton("arrow-up", "上移这个颜色", index - 1);
-				addMoveButton("arrow-down", "下移这个颜色", index + 1);
-				row.addText((input) =>
-					input
-						.setPlaceholder(`颜色 ${index + 1}`)
-						.setValue(slot.name)
-						.onChange((value) => {
-							const name = value.trim();
-							if (!name) return;
-							settings.palette[index] = { ...settings.palette[index], name };
-							commit();
-						})
-				);
-				row.addColorPicker((picker) =>
-					picker.setValue(slot.color).onChange((value) => {
-						settings.palette[index] = { ...settings.palette[index], color: value };
-						commit();
-					})
-				);
-				if (settings.palette.length > 1) {
-					row.addExtraButton((button) =>
-						button.setIcon("trash").setTooltip("删除这个预设颜色").onClick(() => {
-							this.controller.store.detachColorKey(slot.id);
-							settings.palette = settings.palette.filter((_, i) => i !== index);
-							commit();
-							renderPaletteRows();
-						})
-					);
-				}
-			});
-		};
-		renderPaletteRows();
+		renderColorGroupSettings(containerEl, this.app, settings, commit);
 
 		new Setting(containerEl).setName("轨道批注颜色").addColorPicker((c) =>
 			c.setValue(settings.railColor).onChange((v) => {

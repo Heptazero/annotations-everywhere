@@ -3,6 +3,7 @@ import { buildAnnotationBox, type AnnotationBoxHandle } from "./annotation-box";
 import { annotationVisibleInLayer } from "./annotation-layers";
 import { filterAnnotations } from "./annotation-search";
 import { annotationColorOrder, colorSlot, resolveAnnotationColor } from "./annotation-settings";
+import { activeColorSlots, colorSlotLabel } from "./color-groups";
 import type { PdfAnnotation } from "./annotation-types";
 import type { PdfAnnotationsController } from "./controller";
 import type { PdfOutlineItem } from "./pdf-outline";
@@ -474,7 +475,7 @@ export class AnnotationListView extends ItemView {
 
 	private colorInfo(ann: PdfAnnotation): { key: string; color: string; label: string } {
 		const slot = colorSlot(this.controller.settings, ann.colorKey);
-		if (slot) return { key: `slot:${slot.id}`, color: slot.color, label: slot.name };
+		if (slot) return { key: `slot:${slot.id}`, color: slot.color, label: colorSlotLabel(this.controller.settings, slot.id) ?? slot.name };
 		const color = this.colorOf(ann);
 		return {
 			key: ann.pinned ? "default:rail" : "default:free",
@@ -682,7 +683,9 @@ export class AnnotationListView extends ItemView {
 			const rect = color.getBoundingClientRect();
 			openSwatchPicker({
 				at: { x: rect.left, y: rect.bottom },
-				swatches: this.controller.settings.palette,
+				swatches: activeColorSlots(this.controller.settings),
+				colorSettings: this.controller.settings,
+				onColorGroupChange: (id) => this.controller.patchSettings({ activeColorGroupId: id }),
 				currentKey: ann.colorKey,
 				onPick: (colorKey) => {
 					ann.colorKey = colorKey;

@@ -1122,17 +1122,29 @@
 .margin-notes-pdf-swatches {
 	position: fixed;
 	z-index: var(--layer-menu);
-	display: grid;
-	grid-template-columns: repeat(4, auto);
+	display: flex;
+	align-items: center;
+	max-width: calc(100vw - 16px);
 	gap: 6px;
 	padding: 8px;
 	border-radius: 6px;
 	background: var(--background-secondary);
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
+.margin-notes-pdf-swatch-palette {
+	display: flex;
+	gap: 6px;
+	min-width: 0;
+	overflow-x: auto;
+	padding: 3px;
+}
 .margin-notes-pdf-swatch-dot {
+	flex: 0 0 20px;
 	width: 20px;
 	height: 20px;
+	min-height: 20px;
+	padding: 0;
+	border: 0;
 	border-radius: 50%;
 	cursor: pointer;
 	box-shadow: 0 0 0 1px var(--background-modifier-border);
@@ -1145,7 +1157,7 @@
 }
 /* Spans the grid so it reads as an action, not a ninth colour. */
 .margin-notes-pdf-swatch-reset {
-	grid-column: 1 / -1;
+	flex-shrink: 0;
 	padding: 3px 4px;
 	text-align: center;
 	font-size: var(--font-ui-smaller);
@@ -1328,6 +1340,64 @@
 }
 
 .margin-notes-pdf-mark-popover-actions svg { width: 17px; height: 17px; }
+
+/* Context palette selection stays in the toolbar; larger group sets are searchable. */
+.margin-notes-pdf-color-groups {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	gap: 2px;
+}
+.margin-notes-pdf-color-groups.is-segmented {
+	width: max-content;
+	max-width: 100%;
+	margin-bottom: 6px;
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+.margin-notes-pdf-color-groups button {
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+}
+.margin-notes-pdf-color-groups button.is-current {
+	background: var(--background-modifier-hover);
+	color: var(--text-accent);
+}
+.margin-notes-pdf-mark-popover .margin-notes-pdf-color-groups > button {
+	width: 28px;
+	height: 28px;
+	min-height: 28px;
+	padding: 0;
+}
+.margin-notes-pdf-color-group-menu {
+	position: fixed;
+	z-index: var(--layer-menu, 1000);
+	width: min(220px, calc(100vw - 16px));
+	padding: 6px;
+	border-radius: 8px;
+	background: var(--background-primary);
+	box-shadow: var(--shadow-s);
+}
+.margin-notes-pdf-color-group-menu input {
+	width: 100%;
+	margin-bottom: 4px;
+}
+.margin-notes-pdf-color-group-results {
+	display: flex;
+	flex-direction: column;
+	max-height: min(240px, 40vh);
+	overflow-y: auto;
+}
+.margin-notes-pdf-color-group-results button { text-align: left; }
+@media (pointer: coarse) {
+	.margin-notes-pdf-mark-popover .margin-notes-pdf-color-groups > button {
+		width: 36px;
+		height: 36px;
+		min-height: 36px;
+	}
+	.margin-notes-pdf-color-group-results button { min-height: 36px; }
+}
 
 .margin-notes-pdf-mark-popover-delete {
 	color: var(--text-error);

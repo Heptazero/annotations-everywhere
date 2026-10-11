@@ -5,6 +5,7 @@ import { appendAnnotationFormMenuItems, setAnnotationForm } from "./annotation-f
 import { AnnotationLayer } from "./annotation-layer";
 import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./annotation-layer-menus";
 import { AnnotationLayerPicker } from "./annotation-layer-picker";
+import { activeColorGroup, activeColorSlots } from "./color-groups";
 import { compatibleRecoverySources, type OrphanedAnnotationSource } from "./annotation-recovery";
 import { AnnotationRecoveryPicker } from "./annotation-recovery-picker";
 import type { AnnotationStatusSummary } from "./annotation-status";
@@ -131,7 +132,7 @@ export class PdfAnnotationsController {
 				dataPath: this.store.filePath.slice(0, this.store.filePath.lastIndexOf("/")),
 			};
 		}
-		this.store.migrateColorKeys(this.settings.palette);
+		this.migrateColorKeys();
 		// Persist the normalized object palette even when every legacy literal
 		// matched an existing slot. This removes the old string[] settings shape,
 		// rather than merely normalizing it again on every launch.
@@ -182,7 +183,8 @@ export class PdfAnnotationsController {
 						};
 						await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
 					}
-					this.store.migrateColorKeys(this.settings.palette);
+					this.migrateColorKeys();
+					await patchPluginData(this.plugin, { pdfAnnotationSettings: this.settings });
 					new Notice(`已读取同步批注：${this.store.totalAnnotationCount} 条`);
 				}).catch((error) => new Notice(String(error instanceof Error ? error.message : error)));
 			}, 350);
@@ -220,6 +222,11 @@ export class PdfAnnotationsController {
 		// The rail is positioned against the visible width of the pane, so a pane
 		// resize moves it; pdf.js doesn't necessarily re-render pages for that.
 		this.plugin.registerEvent(this.app.workspace.on("resize", () => this.rebuildAll()));
+	}
+
+	private migrateColorKeys(): void {
+		const result = this.store.migrateColorKeys(this.settings.palette);
+		if (result.addedSlots) activeColorGroup(this.settings).colorKeys.push(...this.settings.palette.slice(-result.addedSlots).map((slot) => slot.id));
 	}
 
 	async saveSettings(next: PdfAnnotationSettings): Promise<void> {
@@ -636,7 +643,9 @@ export class PdfAnnotationsController {
 			app: this.app,
 			mode: "create",
 			at: { x: pageBox.left + Math.max(ax, bx) + 6, y: pageBox.top + Math.min(ay, by) },
-			swatches: this.settings.palette,
+			swatches: activeColorSlots(this.settings),
+			colorSettings: this.settings,
+			onColorGroupChange: (id) => this.patchSettings({ activeColorGroupId: id }),
 			quote,
 			onSaveText: (text, colorKey) => {
 				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;

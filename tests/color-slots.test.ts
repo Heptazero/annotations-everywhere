@@ -65,7 +65,7 @@ assert.equal(annotationColorOrder(ann, settings), 1);
 assert.equal(annotationColorOrder({ pinned: true }, settings), settings.palette.length);
 assert.equal(annotationColorOrder({ pinned: false }, settings), settings.palette.length + 1);
 const reversedSettings = { ...settings, palette: [...settings.palette].reverse() };
-assert.equal(annotationColorOrder(ann, reversedSettings), reversedSettings.palette.length - 2);
+assert.equal(annotationColorOrder(ann, reversedSettings), 1); // group order, not catalog order
 
 const disk = new Map<string, string>([
 	[

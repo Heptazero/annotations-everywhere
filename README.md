@@ -42,6 +42,8 @@ Text annotations retain the selected quote. Rectangular selections can be used f
 
 Enable the desktop or mobile selection toolbar in the plugin settings to show it automatically after selecting PDF text. Its colors come from the configurable preset palette. Choose a color to highlight immediately, or use the note icon to add text before saving.
 
+Preset color groups let the same visual color have different meanings in different reading contexts. Add a group in settings to copy the current colors with independent identities, then rename each meaning or choose new colors. Switch groups from the palette icon in the selection toolbar or color picker. Switching groups does not change earlier annotations. Removing a group or color from the presets retains its definition for existing annotations.
+
 Existing PDF annotations can switch between highlights with hover notes, collapsed dots, freely positioned boxes, and left or right margin notes. Use the conversion action in the annotation list or the PDF annotation context menu. Conversion preserves the same annotation, including its text, quote, anchors, color, and layers.
 
 ## Annotation data and sync

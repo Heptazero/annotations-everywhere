@@ -1,5 +1,7 @@
 import { setIcon, type App } from "obsidian";
-import type { AnnotationColorSlot } from "./annotation-settings";
+import type { AnnotationColorSlot, PdfAnnotationSettings } from "./annotation-settings";
+import { activeColorSlots } from "./color-groups";
+import { appendColorGroupPicker } from "./color-group-picker";
 import { beginTextEditorNavigationScope } from "./editor-key-scope";
 
 export interface MarkPopoverOptions {
@@ -7,6 +9,8 @@ export interface MarkPopoverOptions {
 	at: { x: number; y: number };
 	mode: "create" | "existing";
 	swatches: AnnotationColorSlot[];
+	colorSettings?: PdfAnnotationSettings;
+	onColorGroupChange?: (id: string) => void;
 	currentKey?: string;
 	quote?: string;
 	text?: string;
@@ -47,37 +51,45 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	activePopover = handle;
 
 	const toolbar = el.createDiv({ cls: "margin-notes-pdf-mark-popover-toolbar" });
+	if (opts.colorSettings) appendColorGroupPicker(toolbar, opts.colorSettings, (id) => {
+		opts.onColorGroupChange?.(id);
+		renderPalette(); position();
+	}, true);
 	const palette = toolbar.createDiv({ cls: "margin-notes-pdf-mark-popover-palette" });
-	for (const slot of opts.swatches) {
-		const button = palette.createEl("button", {
-			cls: "margin-notes-pdf-mark-popover-swatch",
-			attr: {
-				type: "button",
-				"aria-label": `${slot.name}（${slot.color}）`,
-				"aria-pressed": String(opts.mode === "existing" && opts.currentKey === slot.id),
-				title: slot.name,
-			},
-		});
-		button.setCssProps({ "--margin-notes-pdf-swatch-color": slot.color });
-		button.dataset.colorKey = slot.id;
-		if (opts.mode === "existing" && opts.currentKey === slot.id) button.addClass("is-current");
-		button.addEventListener("click", () => {
-			if (editor) {
-				draftColorKey = slot.id;
-				for (const swatch of palette.querySelectorAll("button")) {
-					const selected = swatch === button;
-					swatch.toggleClass("is-current", selected);
-					swatch.setAttribute("aria-pressed", String(selected));
+	function renderPalette(): void {
+		palette.empty();
+		for (const slot of opts.colorSettings ? activeColorSlots(opts.colorSettings) : opts.swatches) {
+			const button = palette.createEl("button", {
+				cls: "margin-notes-pdf-mark-popover-swatch",
+				attr: {
+					type: "button",
+					"aria-label": `${slot.name}（${slot.color}）`,
+					"aria-pressed": String(draftColorKey === slot.id),
+					title: slot.name,
+				},
+			});
+			button.setCssProps({ "--margin-notes-pdf-swatch-color": slot.color });
+			button.dataset.colorKey = slot.id;
+			if (draftColorKey === slot.id) button.addClass("is-current");
+			button.addEventListener("click", () => {
+				if (editor) {
+					draftColorKey = slot.id;
+					for (const swatch of palette.querySelectorAll("button")) {
+						const selected = swatch === button;
+						swatch.toggleClass("is-current", selected);
+						swatch.setAttribute("aria-pressed", String(selected));
+					}
+					return;
 				}
-				return;
-			}
-			try {
-				opts.onPickColor(slot.id);
-			} finally {
-				close();
-			}
-		});
+				try {
+					opts.onPickColor(slot.id);
+				} finally {
+					close();
+				}
+			});
+		}
 	}
+	renderPalette();
 
 	{
 		const actions = toolbar.createDiv({ cls: "margin-notes-pdf-mark-popover-actions" });
@@ -216,6 +228,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	}
 
 	function onKeyDown(event: KeyboardEvent): void {
+		if (el.querySelector(".margin-notes-pdf-color-group-menu")) return;
 		if (event.key !== "Escape") return;
 		event.preventDefault();
 		event.stopPropagation();

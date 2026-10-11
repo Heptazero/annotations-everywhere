@@ -5,6 +5,7 @@ import { AnnotationGestureController } from "./annotation-gestures";
 import { LeftAnnotationSpace, OUTER_MARGIN_PX, requiredLeftGutter, type LeftSpaceDemand } from "./annotation-space";
 import { appendAnnotationLayerMenuItems } from "./annotation-layer-menus";
 import { appendAnnotationFormMenuItems, setAnnotationForm } from "./annotation-form";
+import { activeColorSlots } from "./color-groups";
 import { annotationVisibleInLayer } from "./annotation-layers";
 import { darken, highlightsBothWays, resolveAnnotationColor, type PdfAnnotationSettings } from "./annotation-settings";
 import { adaptiveLeaderEndpoints, leaderVisible } from "./leader-geometry";
@@ -668,7 +669,9 @@ export class AnnotationLayer {
 	private pickColor(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		openSwatchPicker({
 			at,
-			swatches: this.getSettings().palette,
+			swatches: activeColorSlots(this.getSettings()),
+			colorSettings: this.getSettings(),
+			onColorGroupChange: (id) => this.saveSettings({ activeColorGroupId: id }),
 			currentKey: ann.colorKey,
 			onPick: (colorKey) =>
 				this.mutate(pdfPath, ann, (a) => {
@@ -1073,7 +1076,9 @@ export class AnnotationLayer {
 			app: this.app,
 			mode: "existing",
 			at,
-			swatches: this.getSettings().palette,
+			swatches: activeColorSlots(this.getSettings()),
+			colorSettings: this.getSettings(),
+			onColorGroupChange: (id) => this.saveSettings({ activeColorGroupId: id }),
 			currentKey: ann.colorKey,
 			quote: ann.quote,
 			text: ann.text,

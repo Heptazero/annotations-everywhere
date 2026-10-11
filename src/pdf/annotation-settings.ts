@@ -1,4 +1,5 @@
 import type { PdfAnnotation } from "./annotation-types";
+import { DEFAULT_COLOR_GROUP_ID, normalizeColorGroups, orderedColorKeys, type AnnotationColorGroup } from "./color-groups";
 import {
 	DEFAULT_ANNOTATION_LAYERS,
 	normalizeAnnotationLayers,
@@ -76,6 +77,9 @@ export interface PdfAnnotationSettings {
 	 * visually coherent.
 	 */
 	palette: AnnotationColorSlot[];
+	/** Context-specific palettes; annotation keys remain globally unique. */
+	colorGroups: AnnotationColorGroup[];
+	activeColorGroupId: string;
 	/** Named annotation views. Membership is stored on each annotation by opaque id. */
 	layers: AnnotationLayerDefinition[];
 	/** PDF path → page-centre X in PDF points. Absence means ordinary single-column order. */
@@ -160,13 +164,16 @@ export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	highlightMode: "note",
 	highlightOpacity: 30,
 	palette: DEFAULT_COLOR_SLOTS,
+	colorGroups: [{ id: DEFAULT_COLOR_GROUP_ID, name: "默认", colorKeys: DEFAULT_COLOR_SLOTS.map((slot) => slot.id) }],
+	activeColorGroupId: DEFAULT_COLOR_GROUP_ID,
 	layers: DEFAULT_ANNOTATION_LAYERS,
 	doubleColumnSplits: {},
 };
 
 interface StoredShape {
-	pdfAnnotationSettings?: Omit<Partial<PdfAnnotationSettings>, "palette" | "layers"> & {
+	pdfAnnotationSettings?: Omit<Partial<PdfAnnotationSettings>, "palette" | "layers" | "colorGroups"> & {
 		palette?: unknown[];
+		colorGroups?: unknown;
 		layers?: unknown;
 		// pre-0.4 names
 		marginWidth?: number;
@@ -187,6 +194,10 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 	// shouldn't visibly move anything on first load after the upgrade.
 	const legacyWidth = raw.railWidth ?? raw.marginWidth;
 	const legacyGap = raw.railGap;
+	const palette = normalizeColorSlots(raw.palette);
+	const colorGroups = normalizeColorGroups(raw.colorGroups, palette);
+	const activeGroup = colorGroups.find((group) => !group.archived && group.id === raw.activeColorGroupId)
+		?? colorGroups.find((group) => !group.archived)!;
 	return {
 		...DEFAULT_PDF_ANNOTATION_SETTINGS,
 		...raw,
@@ -202,7 +213,9 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 		freeColor: raw.freeColor ?? raw.floatingColor ?? DEFAULT_PDF_ANNOTATION_SETTINGS.freeColor,
 		opacity: raw.opacity ?? raw.marginOpacity ?? DEFAULT_PDF_ANNOTATION_SETTINGS.opacity,
 		dotSize: normalizeDotSize(raw.dotSize),
-		palette: normalizeColorSlots(raw.palette),
+		palette,
+		colorGroups,
+		activeColorGroupId: activeGroup.id,
 		layers: normalizeAnnotationLayers(raw.layers),
 		doubleColumnSplits: normalizeDoubleColumnSplits(raw.doubleColumnSplits),
 	};
@@ -276,7 +289,7 @@ export function annotationColorOrder(
 	ann: Pick<PdfAnnotation, "colorKey" | "pinned">,
 	settings: PdfAnnotationSettings
 ): number {
-	const slotIndex = ann.colorKey ? settings.palette.findIndex((slot) => slot.id === ann.colorKey) : -1;
+	const slotIndex = ann.colorKey ? orderedColorKeys(settings).indexOf(ann.colorKey) : -1;
 	if (slotIndex >= 0) return slotIndex;
 	return settings.palette.length + (ann.pinned ? 0 : 1);
 }

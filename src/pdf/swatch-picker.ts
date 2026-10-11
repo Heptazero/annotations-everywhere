@@ -10,22 +10,31 @@
 export function openSwatchPicker(opts: {
 	at: { x: number; y: number };
 	swatches: AnnotationColorSlot[];
+	colorSettings?: PdfAnnotationSettings;
+	onColorGroupChange?: (id: string) => void;
 	currentKey?: string;
 	onPick: (colorKey: string | undefined) => void;
 }): void {
 	const el = document.body.createDiv("margin-notes-pdf-swatches");
-
-	for (const slot of opts.swatches) {
-		const b = el.createDiv("margin-notes-pdf-swatch-dot");
-		b.style.background = slot.color;
-		b.setAttribute("aria-label", slot.name);
-		b.setAttribute("title", slot.name);
-		if (opts.currentKey === slot.id) b.addClass("is-current");
-		b.addEventListener("click", () => {
-			opts.onPick(slot.id);
-			close();
-		});
+	if (opts.colorSettings) appendColorGroupPicker(el, opts.colorSettings, (id) => {
+		opts.onColorGroupChange?.(id); renderPalette(); position();
+	}, true);
+	const palette = el.createDiv("margin-notes-pdf-swatch-palette");
+	function renderPalette(): void {
+		palette.empty();
+		for (const slot of opts.colorSettings ? activeColorSlots(opts.colorSettings) : opts.swatches) {
+			const b = palette.createEl("button", { cls: "margin-notes-pdf-swatch-dot", attr: { type: "button" } });
+			b.setCssStyles({ background: slot.color });
+			b.setAttribute("aria-label", slot.name);
+			b.setAttribute("title", slot.name);
+			if (opts.currentKey === slot.id) b.addClass("is-current");
+			b.addEventListener("click", () => {
+				opts.onPick(slot.id);
+				close();
+			});
+		}
 	}
+	renderPalette();
 
 	const reset = el.createDiv({ cls: "margin-notes-pdf-swatch-reset", text: "默认颜色" });
 	reset.addEventListener("click", () => {
@@ -36,14 +45,17 @@ export function openSwatchPicker(opts: {
 	// Positioned after insertion so the measured size can be used to keep it on
 	// screen — a popover opened near the right or bottom edge would otherwise
 	// hang off it.
-	const r = el.getBoundingClientRect();
-	el.style.left = `${Math.max(4, Math.min(opts.at.x, window.innerWidth - r.width - 4))}px`;
-	el.style.top = `${Math.max(4, Math.min(opts.at.y + 6, window.innerHeight - r.height - 4))}px`;
+	function position(): void {
+		const r = el.getBoundingClientRect();
+		el.setCssStyles({ left: `${Math.max(4, Math.min(opts.at.x, window.innerWidth - r.width - 4))}px`, top: `${Math.max(4, Math.min(opts.at.y + 6, window.innerHeight - r.height - 4))}px` });
+	}
+	position();
 
 	const onDown = (e: MouseEvent) => {
 		if (!el.contains(e.target as Node)) close();
 	};
 	const onKey = (e: KeyboardEvent) => {
+		if (el.querySelector(".margin-notes-pdf-color-group-menu")) return;
 		if (e.key === "Escape") close();
 	};
 	function close(): void {
@@ -58,4 +70,6 @@ export function openSwatchPicker(opts: {
 		document.addEventListener("keydown", onKey, true);
 	});
 }
-import type { AnnotationColorSlot } from "./annotation-settings";
+import type { AnnotationColorSlot, PdfAnnotationSettings } from "./annotation-settings";
+import { activeColorSlots } from "./color-groups";
+import { appendColorGroupPicker } from "./color-group-picker";
