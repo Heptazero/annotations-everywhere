@@ -35,6 +35,8 @@ export interface PdfAnnotationSettings {
 	mobileSelectionPalette: boolean;
 	/** Offer the same selection toolbar on desktop. */
 	desktopSelectionPalette: boolean;
+	/** Draw link-derived regions in the same annotation layer. No extra stored notes. */
+	pdfReferenceHighlights: boolean;
 	/** Dot + border colour for free notes. */
 	freeColor: string;
 	/** Dot + border colour for rail notes. */
@@ -152,6 +154,7 @@ export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
 	mobileSelectionPalette: false,
 	desktopSelectionPalette: false,
+	pdfReferenceHighlights: true,
 	freeColor: "#7d94ca",
 	railColor: "#eed37c",
 	opacity: 92,
@@ -205,6 +208,7 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 		annotationPropertyName: normalizeAnnotationPropertyName(raw.annotationPropertyName),
 		mobileSelectionPalette: raw.mobileSelectionPalette === true,
 		desktopSelectionPalette: raw.desktopSelectionPalette === true,
+		pdfReferenceHighlights: raw.pdfReferenceHighlights !== false,
 		railWidthLeft: raw.railWidthLeft ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthLeft,
 		railWidthRight: raw.railWidthRight ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthRight,
 		railGapLeft: raw.railGapLeft ?? legacyGap ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railGapLeft,

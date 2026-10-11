@@ -11,6 +11,7 @@ Annotations Everywhere adds editable margin notes to Markdown and anchored annot
 - Search, filter, sort, copy, move, delete, and recover annotations from a vault-wide manager.
 - Organize annotations with colors, named layers, native or manual outlines, and single- or double-column reading order.
 - Use a compact selection toolbar with preset colors and an add-note action on desktop or mobile.
+- Copy PDF selection/region reference links and jump from highlighted references back to their source notes.
 - Store annotations as plain vault files, with an optional revision-file format designed to reduce sync conflicts.
 
 ## Quick start
@@ -46,6 +47,16 @@ Preset color groups let the same visual color have different meanings in differe
 
 Existing PDF annotations can switch between highlights with hover notes, collapsed dots, freely positioned boxes, and left or right margin notes. Use the conversion action in the annotation list or the PDF annotation context menu. Conversion preserves the same annotation, including its text, quote, anchors, color, and layers.
 
+### PDF reference links
+
+Select PDF text and use the link icon in the selection toolbar, or the **[PDF] 复制选区引用链接** command. Existing highlights and annotations offer **复制引用链接** and **复制引文及链接** in their context menu; the annotation list has a link action too. Copying alone does not create an annotation or edit a note.
+
+Paste the link into a Markdown note. After Obsidian indexes it, **显示 PDF 引用勾画** (enabled by default) shows the referenced region using the existing annotation layer. Click the region and use the return arrow to open the referencing note at its line. Multiple references open a searchable list. Adding a comment or choosing a color explicitly saves a normal annotation; the references themselves remain derived from the notes.
+
+Links retain native `#page=…&selection=…` text offsets or Everything Bilink-compatible `#page=…&rect=…` coordinates. Links copied from a shared translation target the PDF being read, not the English original. Deleting, moving or reanchoring an annotation never rewrites links in your notes. Remove the Markdown link to remove a reference-only highlight.
+
+This first integration does not replace Everything Bilink's cropped embed previews, formula recovery, Markdown block-reference tools or reference-rewrite features. If both plugins are enabled, turn off one plugin's PDF reference highlighting to avoid duplicate layers. Existing links and Bilink data are not migrated or deleted.
+
 ## Annotation data and sync
 
 The default annotation directory is `.annotations-everywhere/` inside the vault. You can choose another vault folder in the plugin settings.
@@ -78,7 +89,7 @@ Restart Obsidian, then enable **Annotations Everywhere** under **Community plugi
 
 ## Privacy
 
-The plugin reads Markdown and PDF files selected through Obsidian and writes its settings and annotation data to the vault. It makes no network requests and collects no analytics.
+The plugin reads Markdown/PDF files through Obsidian and uses Obsidian's link metadata to find PDF reference sources. It writes its settings and annotation data to the vault; copying a reference only writes to the system clipboard. It makes no network requests and collects no analytics.
 
 ## Development
 

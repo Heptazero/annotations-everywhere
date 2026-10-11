@@ -553,6 +553,10 @@ export class AnnotationListView extends ItemView {
 			},
 				actions: [
 				{
+					icon: "link", title: "复制引用 / 查看引用来源",
+					onClick: (event) => this.controller.openReferenceMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
+				},
+				{
 					icon: "replace",
 					title: "转换批注形式",
 					onClick: (event) => this.controller.openAnnotationFormMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
@@ -637,6 +641,10 @@ export class AnnotationListView extends ItemView {
 				this.controller.store.upsert(pdfPath, ann);
 			},
 			actions: [
+				{
+					icon: "link", title: "复制引用 / 查看引用来源",
+					onClick: (event) => this.controller.openReferenceMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
+				},
 				{
 					icon: "replace",
 					title: "转换批注形式",

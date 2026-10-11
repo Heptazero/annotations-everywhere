@@ -1,5 +1,6 @@
 import type { PdfRect } from "./pdf-layer";
 import { normalizeAnnotationLayerIds } from "./annotation-layers";
+import { normalizeStoredTextSelection, type StoredTextSelection } from "./pdf-reference-target";
 
 export type MarginSide = "left" | "right";
 
@@ -44,6 +45,8 @@ export interface PdfAnnotation {
 	 * See quote-anchor.ts.
 	 */
 	quote?: string;
+	/** Native PDF text offsets belong to one specific file and page, not the shared bucket. */
+	textSelection?: StoredTextSelection;
 
 	/** In the side rail (true) or placed freely (false). */
 	pinned: boolean;
@@ -134,6 +137,7 @@ export function normalizeAnnotation(raw: LegacyAnnotation): PdfAnnotation {
 		colorKey: raw.colorKey,
 		layerIds: normalizeAnnotationLayerIds(raw.layerIds),
 		quote: raw.quote,
+		textSelection: normalizeStoredTextSelection(raw.textSelection),
 		leaderAt: raw.leaderAt,
 		showLeader: raw.showLeader,
 		style: raw.style,

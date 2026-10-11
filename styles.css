@@ -1390,6 +1390,35 @@
 	overflow-y: auto;
 }
 .margin-notes-pdf-color-group-results button { text-align: left; }
+
+.margin-notes-pdf-reference-picker {
+	position: fixed;
+	z-index: var(--layer-menu, 1000);
+	width: min(340px, calc(100vw - 16px));
+	box-sizing: border-box;
+	padding: 6px;
+	border-radius: 8px;
+	background: var(--background-primary);
+	box-shadow: var(--shadow-s);
+}
+.margin-notes-pdf-reference-picker input { width: 100%; margin-bottom: 4px; }
+.margin-notes-pdf-reference-results {
+	display: flex;
+	flex-direction: column;
+	max-height: min(300px, 45vh);
+	overflow-y: auto;
+}
+.margin-notes-pdf-reference-results button {
+	flex-shrink: 0;
+	text-align: left;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+}
+.margin-notes-pdf-reference-results button:hover,
+.margin-notes-pdf-reference-results button:focus-visible { background: var(--background-modifier-hover); }
 @media (pointer: coarse) {
 	.margin-notes-pdf-mark-popover .margin-notes-pdf-color-groups > button {
 		width: 36px;
@@ -1397,6 +1426,7 @@
 		min-height: 36px;
 	}
 	.margin-notes-pdf-color-group-results button { min-height: 36px; }
+	.margin-notes-pdf-reference-results button { min-height: 36px; }
 }
 
 .margin-notes-pdf-mark-popover-delete {

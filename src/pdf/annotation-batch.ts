@@ -76,6 +76,8 @@ export function prepareAnnotationTransfer(
 			...annotation,
 			id: makeAnnotationId(),
 			page: targetPage,
+			// Text-layer offsets belong to the source PDF, not the transferred page.
+			textSelection: undefined,
 			anchor: scaleRect(annotation.anchor, scaleX, scaleY),
 			anchorRects: annotation.anchorRects?.map((rect) => scaleRect(rect, scaleX, scaleY)),
 			layerIds: annotation.layerIds ? [...annotation.layerIds] : undefined,

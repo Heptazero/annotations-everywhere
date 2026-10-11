@@ -12,6 +12,8 @@ import { adaptiveLeaderEndpoints, leaderVisible } from "./leader-geometry";
 import { isMarkClick, type MarkPointerStart } from "./mark-click";
 import { openMarkPopover, type MarkPopoverHandle } from "./mark-popover";
 import { openSwatchPicker } from "./swatch-picker";
+import type { PdfReferenceService } from "./pdf-reference-service";
+import { annotationForReferenceRegion, isReferenceAnnotation, materializeReferenceAnnotation, referenceAnnotation, type PdfReferenceRegion } from "./pdf-reference-regions";
 import type { PdfAnnotationStore } from "./annotation-store";
 import { DEFAULT_FREE_WIDTH_PCT, type MarginSide, type PdfAnnotation } from "./annotation-types";
 import {
@@ -113,6 +115,8 @@ export class AnnotationLayer {
 	 * either end is being dragged rather than waiting for the debounced rebuild. */
 	private leaders = new Map<string, LeaderParts>();
 	private markPopover: MarkPopoverHandle | null = null;
+	private referenceOnly = new Map<string, PdfReferenceRegion>();
+	private referenceAnchors = new Set<string>();
 	private markPointerDown: MarkPointerStart | null = null;
 	private markClickTimer = 0;
 	private cancelPendingMarkClick = (): void => {
@@ -130,7 +134,8 @@ export class AnnotationLayer {
 		private saveSettings: (patch: Partial<PdfAnnotationSettings>) => void,
 		/** Hands "re-pick this note's highlight" back to the controller, which owns
 		 * the selection/box-drag machinery. */
-		private requestReanchor: (pdfPath: string, ann: PdfAnnotation) => void
+		private requestReanchor: (pdfPath: string, ann: PdfAnnotation) => void,
+		private references: PdfReferenceService
 	) {
 		this.zoom = new AnnotationZoomLifecycle(
 			() => this.isBusy(),
@@ -254,6 +259,8 @@ export class AnnotationLayer {
 		this.hoveredAnchorId = null;
 		this.bands.clear();
 		this.leaders.clear();
+		this.referenceOnly.clear();
+		this.referenceAnchors.clear();
 
 		const built: Placed[] = [];
 		const marks: AnchoredAnnotation[] = [];
@@ -263,7 +270,8 @@ export class AnnotationLayer {
 		// committed here — see the re-measure below for why.
 		for (const [pageNumber, pageView] of pages) {
 			if (!pageView.pdfPage?.view || !pageView.div.isConnected) continue;
-			for (const ann of this.store.forPage(pdfPath, pageNumber)) {
+			const annotations = this.store.forPage(pdfPath, pageNumber);
+			for (const ann of annotations) {
 				if (!annotationVisibleInLayer(ann, this.getActiveLayerId())) continue;
 				const rect = this.effectiveAnchor(pdfPath, ann, pageView);
 				if (ann.markOnly) {
@@ -277,6 +285,13 @@ export class AnnotationLayer {
 				const handle = this.createBox(layer, pdfPath, ann, pageView);
 				pending.push(handle.render());
 				built.push({ ann, pageView, rect, el: handle.el });
+			}
+			for (const region of this.references.regions(pdfPath, pageNumber, pageView)) {
+				const existing = annotationForReferenceRegion(region, annotations);
+				if (existing) { this.referenceAnchors.add(existing.id); continue; }
+				const ann = referenceAnnotation(pdfPath, region);
+				this.referenceOnly.set(ann.id, region);
+				marks.push({ ann, pageView, rect: region.rect });
 			}
 		}
 		if (built.length === 0) {
@@ -615,9 +630,11 @@ export class AnnotationLayer {
 	}
 
 	private mutate(pdfPath: string, ann: PdfAnnotation, fn: (a: PdfAnnotation) => void): void {
-		fn(ann);
-		ann.updatedAt = Date.now();
-		this.store.upsert(pdfPath, ann);
+		// A derived reference becomes a stored annotation only after an explicit edit.
+		const current = materializeReferenceAnnotation(ann);
+		fn(current);
+		current.updatedAt = Date.now();
+		this.store.upsert(pdfPath, current);
 		this.refresh();
 	}
 
@@ -753,6 +770,12 @@ export class AnnotationLayer {
 
 	private openMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		const menu = new Menu();
+		this.references.appendMenu(menu, pdfPath, ann, at);
+		menu.addSeparator();
+		if (isReferenceAnnotation(ann)) {
+			menu.addItem((item) => item.setTitle("添加批注…").setIcon("message-square-plus").onClick(() => this.openMarkActions(pdfPath, ann, at)));
+			menu.showAtPosition(at); return;
+		}
 		appendAnnotationFormMenuItems(menu, ann, (form) => this.mutate(pdfPath, ann, (a) => setAnnotationForm(a, form)));
 		menu.addSeparator();
 		if (ann.markOnly) {
@@ -908,7 +931,7 @@ export class AnnotationLayer {
 	 * on-screen spot (rail lane, or a dragged-away sticky note) is often not
 	 * where the source text is, so flashing the note alone doesn't show that.
 	 */
-	reveal(pages: Map<number, PDFPageView>, ann: PdfAnnotation): void {
+	reveal(pages: Map<number, PDFPageView>, ann: PdfAnnotation): boolean {
 		const el = this.layer?.querySelector<HTMLElement>(`[data-annotation-id="${ann.id}"]`);
 		if (el) {
 			el.addClass("is-flashing");
@@ -916,11 +939,12 @@ export class AnnotationLayer {
 		}
 
 		const pageView = pages.get(ann.page);
-		if (!pageView) return;
+		if (!pageView) return false;
 		const mark = this.drawAnchorMark(pageView, ann, "margin-notes-pdf-anchor-flash");
-		if (!mark) return;
+		if (!mark) return false;
 		mark.scrollIntoView({ block: "center", behavior: "smooth" });
 		window.setTimeout(() => mark.remove(), 1600);
+		return true;
 	}
 
 	/**
@@ -1062,7 +1086,7 @@ export class AnnotationLayer {
 		this.markClickTimer = window.setTimeout(() => {
 			this.cancelPendingMarkClick();
 			if (window.getSelection()?.toString().trim()) return;
-			if (this.last?.pdfPath !== pdfPath || !this.store.forFile(pdfPath).some((item) => item.id === ann.id)) return;
+			if (this.last?.pdfPath !== pdfPath || !this.store.forFile(pdfPath).some((item) => item.id === ann.id) && !this.referenceOnly.has(ann.id)) return;
 			this.openMarkActions(pdfPath, ann, at);
 		}, 300);
 		document.addEventListener("pointerdown", this.cancelPendingMarkClick, true);
@@ -1072,6 +1096,7 @@ export class AnnotationLayer {
 		this.clearHoverPreview();
 		this.endHoverHighlight();
 		this.hoveredAnchorId = null;
+		const referenceOnly = isReferenceAnnotation(ann);
 		const handle = openMarkPopover({
 			app: this.app,
 			mode: "existing",
@@ -1083,13 +1108,15 @@ export class AnnotationLayer {
 			quote: ann.quote,
 			text: ann.text,
 			initialAction,
+			onCopyReference: () => this.references.copyAnnotation(pdfPath, ann),
+			onReferenceSources: this.references.sources(pdfPath, ann).length ? (position) => this.references.showSources(pdfPath, ann, position) : undefined,
 			onPickColor: (colorKey) => this.mutate(pdfPath, ann, (a) => (a.colorKey = colorKey)),
 			onSaveText: (value, colorKey) => this.mutate(pdfPath, ann, (a) => {
 				a.text = value;
 				a.colorKey = colorKey;
 			}),
-			onChooseForm: (position) => this.openMenu(pdfPath, ann, position),
-			onDelete: () => {
+			onChooseForm: referenceOnly ? undefined : (position) => this.openMenu(pdfPath, ann, position),
+			onDelete: referenceOnly ? undefined : () => {
 				this.store.remove(pdfPath, ann.id);
 				this.refresh();
 			},
@@ -1190,7 +1217,7 @@ export class AnnotationLayer {
 			const lines = (ann.anchorRects?.length ? ann.anchorRects : [rect]).map((lineRect) => pdfRectInPageBox(pageView, lineRect, box));
 			for (const line of lines) this.hitAreas.push({ ann, el, ...line });
 
-			if (mode === "always") {
+			if (mode === "always" || this.referenceAnchors.has(ann.id)) {
 				const bands = lines.map((line) => {
 					const band = layer.createDiv("margin-notes-pdf-anchor-band");
 					band.style.setProperty("--margin-notes-pdf-note-color", this.colorOf(ann));

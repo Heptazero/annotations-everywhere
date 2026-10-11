@@ -57,6 +57,16 @@ export default class AnnotationsEverywherePlugin extends Plugin {
 			},
 		});
 
+		for (const mode of ["link", "quote"] as const) this.addCommand({
+			id: mode === "link" ? "pdf-copy-reference" : "pdf-copy-quote-reference",
+			name: mode === "link" ? "[PDF] 复制选区引用链接" : "[PDF] 复制选区引文及链接",
+			checkCallback: (checking) => {
+				const active = this.pdfAnnotations.hasPdfTarget();
+				if (!checking && active) this.pdfAnnotations.copySelectionReference(mode);
+				return active;
+			},
+		});
+
 		// Deliberately NO default hotkey: Cmd+Z is handled by a listener on the PDF
 		// view itself (controller.attachUndoKeys), which cannot interfere with the
 		// editor. Declaring it here put an entry in the global hotkey table for a

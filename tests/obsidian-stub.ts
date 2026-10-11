@@ -71,3 +71,20 @@ export function debounce<T extends (...args: never[]) => unknown>(fn: T): T {
 export async function loadPdfJs(): Promise<never> {
 	throw new Error("loadPdfJs is unavailable in unit tests");
 }
+
+export function parseLinktext(link: string): { path: string; subpath: string } {
+	const index = link.indexOf("#");
+	return index < 0 ? { path: link, subpath: "" } : { path: link.slice(0, index), subpath: link.slice(index) };
+}
+
+export class Notice {
+	static messages: string[] = [];
+	constructor(message: string) { Notice.messages.push(message); }
+}
+
+export class Menu {}
+
+// The native picker UI is exercised by the user, not the headless suite.
+export function prepareFuzzySearch(query: string): (text: string) => { score: number; matches: [number, number][] } | null {
+	return (text) => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ? { score: 0, matches: [] } : null;
+}

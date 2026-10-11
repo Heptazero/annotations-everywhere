@@ -5,6 +5,7 @@ import { normalizeAnnotation } from "../src/pdf/annotation-types";
 const original = normalizeAnnotation({
 	id: "stable-record", page: 5, quote: "continuous source quote", text: "Comment\n$E=mc^2$",
 	anchor: [10, 20, 30, 40], anchorRects: [[10, 20, 30, 40]],
+	textSelection: { pdfPath: "paper.pdf", page: 5, range: [0, 2, 1, 4] },
 	colorKey: "my-colour", layerIds: ["layer-a", "layer-b"],
 	createdAt: 123, updatedAt: 456, freeX: -10, freeY: 25, freeW: 30,
 	fontScale: 1.2, showLeader: true,

@@ -11,6 +11,7 @@ export interface AnchorResult {
 	rect: PdfRect;
 	/** One PDF-space rectangle per selected visual line. */
 	rects: PdfRect[];
+	selection: Selection;
 }
 
 function textDivIndexOf(textDivs: HTMLElement[], node: Node): number {
@@ -84,5 +85,5 @@ export function anchorFromActiveSelection(): AnchorResult | null {
 	const rect = unionRect(rects);
 	if (!rect) return null;
 
-	return { file, view: info.view, pageNumber: info.pageNumber, pageView: info.pageView, rect, rects };
+	return { file, view: info.view, pageNumber: info.pageNumber, pageView: info.pageView, rect, rects, selection };
 }

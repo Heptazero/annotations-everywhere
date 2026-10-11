@@ -37,6 +37,10 @@ import { outlineHasDestination, PdfOutlineReader, type PdfOutlineItem } from "./
 import { sortAnnotationsForReading } from "./reading-order";
 import { SharedFileLifecycle } from "./shared-file-lifecycle";
 import { SourceAnnotationSync } from "./source-annotation-sync";
+import { PdfReferenceService } from "./pdf-reference-service";
+import { validPdfRect, type PdfReferenceTarget, type StoredTextSelection } from "./pdf-reference-target";
+import { computeSelectionRects, type Selection } from "./selection-geom";
+import { unionRect } from "./annotation-anchor";
 import type { PDFPageView } from "./pdfjs-types";
 import { attachRectSelectListener, type RectSelectController } from "./rect-select";
 import { findScrollAncestor } from "./scroll-container";
@@ -71,6 +75,7 @@ interface ViewState {
 export class PdfAnnotationsController {
 	readonly store: PdfAnnotationStore;
 	readonly annotationPropertySync: SourceAnnotationSync;
+	readonly references: PdfReferenceService;
 	settings: PdfAnnotationSettings = DEFAULT_PDF_ANNOTATION_SETTINGS;
 
 	private rectSelect: RectSelectController = { armed: false };
@@ -102,6 +107,12 @@ export class PdfAnnotationsController {
 		this.store = new PdfAnnotationStore(app, plugin);
 		this.annotationPropertySync = new SourceAnnotationSync(app, this.store, () => this.settings);
 		this.outlineReader = new PdfOutlineReader(app);
+		this.references = new PdfReferenceService(app, plugin, {
+			settings: () => this.settings,
+			invalidate: () => this.rebuildAll(),
+			page: (path, page) => this.referencePage(path, page),
+			reveal: (view, target) => this.revealReference(view, target),
+		});
 		this.fileLifecycle = new SharedFileLifecycle({
 			app,
 			plugin,
@@ -200,6 +211,7 @@ export class PdfAnnotationsController {
 		}));
 		this.plugin.register(() => this.annotationPropertySync.dispose());
 		this.fileLifecycle.register();
+		this.references.register();
 
 		this.app.workspace.onLayoutReady(() => {
 			this.scanPDFViews();
@@ -338,6 +350,37 @@ export class PdfAnnotationsController {
 			if (shared !== undefined) return shared;
 		}
 		return undefined;
+	}
+
+	copySelectionReference(mode: "link" | "quote" = "link"): void {
+		const selected = anchorFromActiveSelection();
+		if (!selected) { new Notice("先在 PDF 上选中文字；已有勾画可从菜单复制引用"); return; }
+		void this.references.copy(selected.file.path, { page: selected.pageNumber, rect: selected.rect, selection: selected.selection }, window.getSelection()?.toString(), mode);
+	}
+
+	openReferenceMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
+		this.references.openMenu(pdfPath, ann, at);
+	}
+
+	private referencePage(pdfPath: string, page: number): PDFPageView | undefined {
+		for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+			const state = this.states.get(leaf.view as FileView);
+			if (state?.currentPath() === pdfPath) return state.pages.get(page);
+		}
+		return undefined;
+	}
+
+	private revealReference(view: FileView, target: PdfReferenceTarget): boolean {
+		this.scanPDFViews();
+		const state = this.states.get(view);
+		if (!state || state.currentPath() !== view.file?.path) return false;
+		const pageView = state.pages.get(target.page);
+		if (!pageView?.div.isConnected || !pageView.pdfPage?.view) return false;
+		const lines = target.selection ? computeSelectionRects(pageView, target.selection).map((line) => line.rect) : [];
+		const rect = unionRect(lines) ?? target.rect;
+		if (!validPdfRect(rect)) return false;
+		return state.layer.reveal(state.pages, { id: "pdf-reference-flash", page: target.page, anchor: rect,
+			anchorRects: lines.length ? lines : undefined, markOnly: true, pinned: false, collapsed: true, side: "right", text: "", createdAt: 0, updatedAt: 0 });
 	}
 
 	private visiblePageMidpoint(pdfPath: string): number | null {
@@ -595,7 +638,8 @@ export class PdfAnnotationsController {
 		const sel = anchorFromActiveSelection();
 		if (sel) {
 			const quote = window.getSelection()?.toString().trim();
-			this.place(sel.file.path, sel.pageNumber, sel.rect, form, quote || undefined, sel.rects);
+			this.place(sel.file.path, sel.pageNumber, sel.rect, form, quote || undefined, sel.rects,
+				{ pdfPath: sel.file.path, page: sel.pageNumber, range: sel.selection });
 			return;
 		}
 		this.pendingPlacement = { kind: "note", form };
@@ -616,7 +660,7 @@ export class PdfAnnotationsController {
 		const sel = anchorFromActiveSelection();
 		if (sel) {
 			const quote = window.getSelection()?.toString().trim();
-			this.showMarkPalette(sel.file.path, sel.pageNumber, sel.pageView, sel.rect, quote || undefined, sel.rects, sel.view);
+			this.showMarkPalette(sel.file.path, sel.pageNumber, sel.pageView, sel.rect, quote || undefined, sel.rects, sel.view, sel.selection);
 			return;
 		}
 		this.pendingPlacement = { kind: "mark" };
@@ -632,7 +676,8 @@ export class PdfAnnotationsController {
 		rect: PdfRect,
 		quote?: string,
 		anchorRects?: PdfRect[],
-		view: FileView | null = getActivePDFView(this.app)
+		view: FileView | null = getActivePDFView(this.app),
+		selection?: Selection
 	): void {
 		this.closePendingMarkPopover();
 		const anchor = anchorRects?.[anchorRects.length - 1] ?? rect;
@@ -646,14 +691,17 @@ export class PdfAnnotationsController {
 			swatches: activeColorSlots(this.settings),
 			colorSettings: this.settings,
 			onColorGroupChange: (id) => this.patchSettings({ activeColorGroupId: id }),
+			onCopyReference: () => void this.references.copy(pdfPath, { page: pageNumber, rect, selection }, quote),
 			quote,
 			onSaveText: (text, colorKey) => {
 				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;
-				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey, text);
+				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey, text,
+					selection ? { pdfPath, page: pageNumber, range: selection } : undefined);
 			},
 			onPickColor: (colorKey) => {
 				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;
-				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey);
+				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey, "",
+					selection ? { pdfPath, page: pageNumber, range: selection } : undefined);
 			},
 			onClose: () => {
 				if (this.pendingMarkPopover?.handle === handle) this.pendingMarkPopover = null;
@@ -691,7 +739,8 @@ export class PdfAnnotationsController {
 			// something can still identify the passage. A box has no such handle,
 			// so it stays coordinates-only.
 			const text = window.getSelection()?.toString().trim();
-			this.applyReanchor(pdfPath, ann.id, sel.pageNumber, sel.rect, text || undefined, sel.rects);
+			this.applyReanchor(pdfPath, ann.id, sel.pageNumber, sel.rect, text || undefined, sel.rects,
+				{ pdfPath: sel.file.path, page: sel.pageNumber, range: sel.selection });
 			return;
 		}
 		this.pendingPlacement = null;
@@ -706,13 +755,15 @@ export class PdfAnnotationsController {
 		pageNumber: number,
 		rect: PdfRect,
 		quote?: string,
-		anchorRects?: PdfRect[]
+		anchorRects?: PdfRect[],
+		textSelection?: StoredTextSelection
 	): void {
 		const ann = this.store.forFile(pdfPath).find((a) => a.id === id);
 		if (!ann) return;
 		ann.page = pageNumber;
 		ann.anchor = rect;
 		ann.anchorRects = anchorRects;
+		ann.textSelection = textSelection;
 		// Either way the old quote must go: it described the previous passage, and
 		// leaving it would let a later re-resolution drag the highlight back.
 		ann.quote = quote;
@@ -1181,12 +1232,13 @@ export class PdfAnnotationsController {
 		window.setTimeout(() => position(0), 320);
 	}
 
-	private place(pdfPath: string, pageNumber: number, rect: PdfRect, form: NewNoteForm, quote?: string, anchorRects?: PdfRect[]): void {
+	private place(pdfPath: string, pageNumber: number, rect: PdfRect, form: NewNoteForm, quote?: string, anchorRects?: PdfRect[], textSelection?: StoredTextSelection): void {
 		const ann: PdfAnnotation = {
 			id: makeAnnotationId(),
 			page: pageNumber,
 			anchor: rect,
 			anchorRects,
+			textSelection,
 			quote,
 			pinned: form.pinned,
 			collapsed: form.collapsed,
@@ -1203,13 +1255,14 @@ export class PdfAnnotationsController {
 		if (state) state.layer.rebuild(pdfPath, state.pages);
 	}
 
-	private placeMark(pdfPath: string, pageNumber: number, rect: PdfRect, quote?: string, anchorRects?: PdfRect[], colorKey?: string, text = ""): void {
+	private placeMark(pdfPath: string, pageNumber: number, rect: PdfRect, quote?: string, anchorRects?: PdfRect[], colorKey?: string, text = "", textSelection?: StoredTextSelection): void {
 		const ann: PdfAnnotation = {
 			id: makeAnnotationId(),
 			page: pageNumber,
 			anchor: rect,
 			anchorRects,
 			markOnly: true,
+			textSelection,
 			quote,
 			colorKey,
 			pinned: false,
@@ -1307,7 +1360,7 @@ export class PdfAnnotationsController {
 				if (this.pendingMarkPopover && !this.pendingMarkPopover.handle.requestClose()) return;
 				lastKey = key;
 				this.showMarkPalette(selected.file.path, selected.pageNumber, selected.pageView,
-					selected.rect, quote, selected.rects, view);
+					selected.rect, quote, selected.rects, view, selected.selection);
 			}, Platform.isMobile ? 450 : 180);
 		};
 		component.registerDomEvent(document, "selectionchange", () => {
@@ -1351,7 +1404,8 @@ export class PdfAnnotationsController {
 			() => this.settings,
 			() => this.activeLayerId,
 			(patch) => this.patchSettings(patch),
-			(pdfPath, ann) => this.reanchor(pdfPath, ann)
+			(pdfPath, ann) => this.reanchor(pdfPath, ann),
+			this.references
 		);
 
 		// Obsidian reuses the same FileView (and pdf.js viewer) when the user opens a

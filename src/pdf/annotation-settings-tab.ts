@@ -124,6 +124,12 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 				commit();
 			}));
 
+		new Setting(containerEl).setName("显示 PDF 引用勾画")
+			.setDesc("从笔记里的 PDF 链接显示引用位置，与批注共用显示层，不另存批注。若同时使用 everything bilink，只开启一边的引用勾画以免重复。")
+			.addToggle((toggle) => toggle.setValue(settings.pdfReferenceHighlights).onChange((value) => {
+				settings.pdfReferenceHighlights = value; commit();
+			}));
+
 		const previewSync = (enableAfterConfirm: boolean): void => {
 			const property = normalizeAnnotationPropertyName(settings.annotationPropertyName);
 			settings.annotationPropertyName = property;

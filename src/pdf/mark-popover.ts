@@ -17,6 +17,8 @@ export interface MarkPopoverOptions {
 	onPickColor: (id: string) => void;
 	onSaveText?: (text: string, colorKey?: string) => void;
 	onChooseForm?: (at: { x: number; y: number }) => void;
+	onCopyReference?: () => void;
+	onReferenceSources?: (at: { x: number; y: number }) => void;
 	onDelete?: () => void;
 	onClose?: () => void;
 	/** Opens the inline deletion confirmation, for the PDF context-menu path. */
@@ -93,6 +95,19 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 
 	{
 		const actions = toolbar.createDiv({ cls: "margin-notes-pdf-mark-popover-actions" });
+		if (opts.onCopyReference) {
+			const copy = actions.createEl("button", { attr: { type: "button", "aria-label": "复制引用链接", title: "复制引用链接" } });
+			setIcon(copy, "link");
+			copy.addEventListener("click", () => opts.onCopyReference?.());
+		}
+		if (opts.onReferenceSources) {
+			const sources = actions.createEl("button", { attr: { type: "button", "aria-label": "引用此处的笔记", title: "引用此处的笔记" } });
+			setIcon(sources, "corner-up-left");
+			sources.addEventListener("click", () => {
+				const bounds = sources.getBoundingClientRect();
+				close(); opts.onReferenceSources?.({ x: bounds.left, y: bounds.bottom });
+			});
+		}
 		if (opts.onSaveText) {
 			const label = opts.text?.trim() ? "编辑批注" : "添加批注";
 			const edit = actions.createEl("button", {
