@@ -32,6 +32,8 @@ export interface PdfAnnotationSettings {
 	annotationPropertyName: string;
 	/** On mobile, offer the existing mark palette after PDF text selection settles. */
 	mobileSelectionPalette: boolean;
+	/** Offer the same selection toolbar on desktop. */
+	desktopSelectionPalette: boolean;
 	/** Dot + border colour for free notes. */
 	freeColor: string;
 	/** Dot + border colour for rail notes. */
@@ -145,6 +147,7 @@ export const DEFAULT_PDF_ANNOTATION_SETTINGS: PdfAnnotationSettings = {
 	syncAnnotationProperty: false,
 	annotationPropertyName: DEFAULT_ANNOTATION_PROPERTY,
 	mobileSelectionPalette: false,
+	desktopSelectionPalette: false,
 	freeColor: "#7d94ca",
 	railColor: "#eed37c",
 	opacity: 92,
@@ -190,6 +193,7 @@ export async function loadPdfAnnotationSettings(plugin: { loadData(): Promise<un
 		syncAnnotationProperty: raw.syncAnnotationProperty === true,
 		annotationPropertyName: normalizeAnnotationPropertyName(raw.annotationPropertyName),
 		mobileSelectionPalette: raw.mobileSelectionPalette === true,
+		desktopSelectionPalette: raw.desktopSelectionPalette === true,
 		railWidthLeft: raw.railWidthLeft ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthLeft,
 		railWidthRight: raw.railWidthRight ?? legacyWidth ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railWidthRight,
 		railGapLeft: raw.railGapLeft ?? legacyGap ?? DEFAULT_PDF_ANNOTATION_SETTINGS.railGapLeft,

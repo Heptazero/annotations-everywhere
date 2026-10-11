@@ -1,4 +1,4 @@
-import { Platform, type App } from "obsidian";
+import { setIcon, type App } from "obsidian";
 import type { AnnotationColorSlot } from "./annotation-settings";
 import { beginTextEditorNavigationScope } from "./editor-key-scope";
 
@@ -11,7 +11,8 @@ export interface MarkPopoverOptions {
 	quote?: string;
 	text?: string;
 	onPickColor: (id: string) => void;
-	onSaveText?: (text: string) => void;
+	onSaveText?: (text: string, colorKey?: string) => void;
+	onChooseForm?: (at: { x: number; y: number }) => void;
 	onDelete?: () => void;
 	onClose?: () => void;
 	/** Opens the inline deletion confirmation, for the PDF context-menu path. */
@@ -33,7 +34,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 
 	const el = document.body.createDiv({
 		cls: "margin-notes-pdf-mark-popover",
-		attr: { role: "dialog", "aria-label": opts.mode === "create" ? "选择勾画颜色" : "编辑勾画" },
+		attr: { role: "dialog", "aria-label": opts.mode === "create" ? "勾画与批注" : "编辑勾画" },
 	});
 	let closed = false;
 	let confirmRow: HTMLElement | null = null;
@@ -41,14 +42,12 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	let releaseNavigationScope: (() => void) | null = null;
 	let draftHint: HTMLElement | null = null;
 	let deleteButton: HTMLButtonElement | null = null;
+	let draftColorKey = opts.currentKey;
 	const handle: MarkPopoverHandle = { close, requestClose, isDirty };
 	activePopover = handle;
 
-	if (opts.quote?.trim()) {
-		el.createDiv({ cls: "margin-notes-pdf-mark-popover-quote", text: opts.quote.trim() });
-	}
-
-	const palette = el.createDiv({ cls: "margin-notes-pdf-mark-popover-palette" });
+	const toolbar = el.createDiv({ cls: "margin-notes-pdf-mark-popover-toolbar" });
+	const palette = toolbar.createDiv({ cls: "margin-notes-pdf-mark-popover-palette" });
 	for (const slot of opts.swatches) {
 		const button = palette.createEl("button", {
 			cls: "margin-notes-pdf-mark-popover-swatch",
@@ -59,9 +58,19 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 				title: slot.name,
 			},
 		});
-		button.style.setProperty("--margin-notes-pdf-swatch-color", slot.color);
+		button.setCssProps({ "--margin-notes-pdf-swatch-color": slot.color });
+		button.dataset.colorKey = slot.id;
 		if (opts.mode === "existing" && opts.currentKey === slot.id) button.addClass("is-current");
 		button.addEventListener("click", () => {
+			if (editor) {
+				draftColorKey = slot.id;
+				for (const swatch of palette.querySelectorAll("button")) {
+					const selected = swatch === button;
+					swatch.toggleClass("is-current", selected);
+					swatch.setAttribute("aria-pressed", String(selected));
+				}
+				return;
+			}
 			try {
 				opts.onPickColor(slot.id);
 			} finally {
@@ -70,16 +79,18 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 		});
 	}
 
-	if (opts.mode === "existing") {
-		const actions = el.createDiv({ cls: "margin-notes-pdf-mark-popover-actions" });
+	{
+		const actions = toolbar.createDiv({ cls: "margin-notes-pdf-mark-popover-actions" });
 		if (opts.onSaveText) {
+			const label = opts.text?.trim() ? "编辑批注" : "添加批注";
 			const edit = actions.createEl("button", {
-				text: opts.text?.trim() ? "编辑批注" : "添加批注",
-				attr: { type: "button" },
+				attr: { type: "button", "aria-label": label, title: label },
 			});
+			setIcon(edit, "message-square-plus");
 			edit.addEventListener("click", () => {
 				if (editor) return;
 				actions.hide();
+				el.addClass("is-expanded");
 				const form = el.createDiv({ cls: "margin-notes-pdf-mark-popover-editor" });
 				editor = form.createEl("textarea", {
 					attr: { "aria-label": "批注内容", placeholder: "写下批注…", rows: "4" },
@@ -99,14 +110,21 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 					draftHint = null;
 					form.remove();
 					editor = null;
+					draftColorKey = opts.currentKey;
+					for (const swatch of palette.querySelectorAll<HTMLButtonElement>("button")) {
+						const selected = opts.mode === "existing" && swatch.dataset.colorKey === opts.currentKey;
+						swatch.toggleClass("is-current", selected);
+						swatch.setAttribute("aria-pressed", String(selected));
+					}
 					actions.show();
+					el.removeClass("is-expanded");
 					position();
 				};
 				cancel.addEventListener("click", dismissEditor);
 				save.addEventListener("click", () => {
 					const text = editor?.value ?? "";
 					try {
-						opts.onSaveText?.(text);
+						opts.onSaveText?.(text, draftColorKey);
 					} finally {
 						close();
 					}
@@ -124,17 +142,27 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 				editor.focus({ preventScroll: true });
 			});
 		}
+		if (opts.onChooseForm) {
+			const form = actions.createEl("button", { attr: { type: "button", "aria-label": "转换批注形式", title: "转换批注形式" } });
+			setIcon(form, "replace");
+			form.addEventListener("click", () => {
+				const bounds = form.getBoundingClientRect();
+				close();
+				opts.onChooseForm?.({ x: bounds.left, y: bounds.bottom });
+			});
+		}
 
 		if (opts.onDelete) {
 			const remove = actions.createEl("button", {
-				text: "删除勾画",
 				cls: "margin-notes-pdf-mark-popover-delete",
-				attr: { type: "button" },
+				attr: { type: "button", "aria-label": "删除勾画", title: "删除勾画" },
 			});
+			setIcon(remove, "trash-2");
 			deleteButton = remove;
 			remove.addEventListener("click", () => {
 				if (confirmRow) return;
 				actions.hide();
+				el.addClass("is-expanded");
 				confirmRow = el.createDiv({ cls: "margin-notes-pdf-mark-popover-confirm" });
 				confirmRow.createDiv({ text: "删除整条勾画及其批注？" });
 				const controls = confirmRow.createDiv({ cls: "margin-notes-pdf-mark-popover-editor-actions" });
@@ -148,6 +176,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 					confirmRow?.remove();
 					confirmRow = null;
 					actions.show();
+					el.removeClass("is-expanded");
 					position();
 					remove.focus();
 				});
@@ -175,8 +204,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 		const below = y + gap;
 		const above = y - bounds.height - gap;
 		const top = below + bounds.height <= window.innerHeight - gap ? below : Math.max(gap, above);
-		el.style.left = `${left}px`;
-		el.style.top = `${Math.min(top, Math.max(gap, window.innerHeight - bounds.height - gap))}px`;
+		el.setCssStyles({ left: `${left}px`, top: `${Math.min(top, Math.max(gap, window.innerHeight - bounds.height - gap))}px` });
 	}
 
 	function onPointerDown(event: PointerEvent): void {
@@ -218,7 +246,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	}
 
 	function isDirty(): boolean {
-		return !!editor && editor.value !== (opts.text ?? "");
+		return !!editor && (editor.value !== (opts.text ?? "") || draftColorKey !== opts.currentKey);
 	}
 
 	function close(): void {
@@ -241,11 +269,7 @@ export function openMarkPopover(opts: MarkPopoverOptions): MarkPopoverHandle | n
 	document.addEventListener("scroll", onScroll, true);
 	window.addEventListener("resize", position);
 	const initialConfirm = el.querySelector<HTMLElement>(".margin-notes-pdf-mark-popover-confirm");
-	// Focusing a button while the OS selection handles are open can collapse the
-	// selected PDF text on mobile before the user has chosen a colour.
-	if (!Platform.isMobile) {
-		if (initialConfirm) initialConfirm.querySelector<HTMLButtonElement>("button:last-child")?.focus({ preventScroll: true });
-		else palette.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
-	}
+	// Preserve the PDF selection; only an explicitly opened confirmation takes focus.
+	initialConfirm?.querySelector<HTMLButtonElement>("button:last-child")?.focus({ preventScroll: true });
 	return handle;
 }

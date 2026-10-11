@@ -1242,11 +1242,12 @@
 	position: fixed;
 	z-index: var(--layer-menu, 1000);
 	box-sizing: border-box;
-	width: min(260px, calc(100vw - 16px));
+	width: max-content;
+	max-width: calc(100vw - 16px);
 	max-height: min(420px, calc(100vh - 16px));
 	overflow-y: auto;
-	padding: 9px;
-	border: 1px solid var(--background-modifier-border);
+	padding: 4px;
+	border: 0;
 	border-radius: 8px;
 	background: var(--background-primary);
 	color: var(--text-normal);
@@ -1254,48 +1255,50 @@
 	font-size: var(--font-ui-small);
 }
 
-.margin-notes-pdf-mark-popover-quote {
-	max-height: 3.8em;
-	overflow: hidden;
-	margin-bottom: 8px;
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-	line-height: 1.25;
-	word-break: break-word;
+.margin-notes-pdf-mark-popover.is-expanded {
+	width: min(300px, calc(100vw - 16px));
+}
+
+.margin-notes-pdf-mark-popover-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 4px;
 }
 
 .margin-notes-pdf-mark-popover-palette {
-	display: grid;
-	grid-template-columns: repeat(4, 1fr);
-	gap: 5px;
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	overflow-x: auto;
+	gap: 2px;
 }
 
-.margin-notes-pdf-mark-popover-swatch {
+.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-swatch {
 	display: grid;
 	place-items: center;
-	min-width: 0;
-	min-height: 34px;
+	flex: 0 0 28px;
+	width: 28px;
+	height: 28px;
+	min-height: 28px;
 	padding: 0;
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 5px;
-	background: var(--background-secondary);
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	box-shadow: none;
 	cursor: pointer;
 }
 
 .margin-notes-pdf-mark-popover-swatch::before {
 	content: "";
-	width: 19px;
-	height: 19px;
+	width: 18px;
+	height: 18px;
 	border-radius: 50%;
 	background: var(--margin-notes-pdf-swatch-color);
-	box-shadow: 0 0 0 1px var(--background-modifier-border);
 }
 
-.margin-notes-pdf-mark-popover-swatch:hover,
-.margin-notes-pdf-mark-popover-swatch:focus-visible,
-.margin-notes-pdf-mark-popover-swatch.is-current {
-	border-color: var(--text-normal);
-	background: var(--background-modifier-hover);
+.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-swatch:hover::before,
+.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-swatch.is-current::before {
+	box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 3px var(--margin-notes-pdf-swatch-color);
 }
 
 .margin-notes-pdf-mark-popover-swatch:focus-visible,
@@ -1307,17 +1310,24 @@
 
 .margin-notes-pdf-mark-popover-actions {
 	display: flex;
-	gap: 5px;
-	margin-top: 8px;
+	flex-shrink: 0;
+	gap: 2px;
 }
 
-.margin-notes-pdf-mark-popover-actions button {
-	flex: 1 1 0;
-	min-width: 0;
-	min-height: 30px;
-	padding: 3px 6px;
+.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-actions button {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	min-height: 28px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
 	font-size: var(--font-ui-smaller);
 }
+
+.margin-notes-pdf-mark-popover-actions svg { width: 17px; height: 17px; }
 
 .margin-notes-pdf-mark-popover-delete {
 	color: var(--text-error);
@@ -1362,8 +1372,17 @@
 }
 
 @media (pointer: coarse) {
-	.margin-notes-pdf-mark-popover-swatch,
-	.margin-notes-pdf-mark-popover-actions button,
+	.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-swatch {
+		flex-basis: 36px;
+		width: 36px;
+		height: 36px;
+		min-height: 36px;
+	}
+	.margin-notes-pdf-mark-popover .margin-notes-pdf-mark-popover-actions button {
+		width: 36px;
+		height: 36px;
+		min-height: 36px;
+	}
 	.margin-notes-pdf-mark-popover-editor-actions button {
 		min-height: 44px;
 	}

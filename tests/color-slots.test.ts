@@ -19,6 +19,7 @@ assert.equal(settings.palette[1].id, LEGACY_COLOR_KEY_MAP.concept);
 assert.equal(settings.palette[1].name, "定义与建模");
 assert.equal(settings.dotSize, 12);
 assert.equal(settings.mobileSelectionPalette, false);
+assert.equal(settings.desktopSelectionPalette, false);
 assert.deepEqual(settings.layers.map((layer) => layer.name), ["内心 OS", "论证骨架", "知识查阅"]);
 
 const mobileSelectionSettings = await loadPdfAnnotationSettings({
@@ -29,6 +30,16 @@ const invalidMobileSelectionSettings = await loadPdfAnnotationSettings({
 	loadData: async () => ({ pdfAnnotationSettings: { mobileSelectionPalette: "true" } }),
 });
 assert.equal(invalidMobileSelectionSettings.mobileSelectionPalette, false);
+
+const desktopSettings = await loadPdfAnnotationSettings({
+	loadData: async () => ({ pdfAnnotationSettings: { desktopSelectionPalette: true, mobileSelectionPalette: false } }),
+});
+assert.equal(desktopSettings.desktopSelectionPalette, true);
+assert.equal(desktopSettings.mobileSelectionPalette, false);
+const invalidDesktopSettings = await loadPdfAnnotationSettings({
+	loadData: async () => ({ pdfAnnotationSettings: { desktopSelectionPalette: "true" } }),
+});
+assert.equal(invalidDesktopSettings.desktopSelectionPalette, false);
 
 const dotSizeSettings = await loadPdfAnnotationSettings({
 	loadData: async () => ({ pdfAnnotationSettings: { dotSize: 99 } }),

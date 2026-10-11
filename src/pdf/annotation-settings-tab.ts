@@ -109,10 +109,17 @@ export class PdfAnnotationSettingTab extends PluginSettingTab {
 		void refreshDataStatus();
 
 		new Setting(containerEl)
-			.setName("手机划词后显示勾画颜色")
-			.setDesc("开启后，在手机 PDF 中选中文字并停稳，会直接出现勾画颜色面板；未选颜色不会保存。拖框勾画仍可用原命令。")
+			.setName("手机划词后显示批注工具栏")
+			.setDesc("选中文字后显示一排预设颜色和添加批注按钮。颜色在下方「预设颜色」中设置；关闭工具栏不会保存。")
 			.addToggle((toggle) => toggle.setValue(settings.mobileSelectionPalette).onChange((value) => {
 				settings.mobileSelectionPalette = value;
+				commit();
+			}));
+		new Setting(containerEl)
+			.setName("电脑划词后显示批注工具栏")
+			.setDesc("鼠标选中文字或用键盘调整选区后，显示与手机相同的工具栏。")
+			.addToggle((toggle) => toggle.setValue(settings.desktopSelectionPalette).onChange((value) => {
+				settings.desktopSelectionPalette = value;
 				commit();
 			}));
 

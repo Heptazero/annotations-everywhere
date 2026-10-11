@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import "./color-slots.test";
 import "./annotation-layers.test";
+import "./annotation-form.test";
 import "./reading-order.test";
 import "./markdown-margin.test";
 import "./mark-click.test";

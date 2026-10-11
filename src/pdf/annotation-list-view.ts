@@ -552,6 +552,11 @@ export class AnnotationListView extends ItemView {
 			},
 				actions: [
 				{
+					icon: "replace",
+					title: "转换批注形式",
+					onClick: (event) => this.controller.openAnnotationFormMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
+				},
+				{
 					icon: "layers",
 					title: "设置所属图层",
 					onClick: (event) =>
@@ -631,6 +636,11 @@ export class AnnotationListView extends ItemView {
 				this.controller.store.upsert(pdfPath, ann);
 			},
 			actions: [
+				{
+					icon: "replace",
+					title: "转换批注形式",
+					onClick: (event) => this.controller.openAnnotationFormMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
+				},
 				{
 					icon: "layers",
 					title: "设置所属图层",

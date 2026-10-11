@@ -1,6 +1,7 @@
 import { Component, FileView, Menu, Notice, Platform, TFile, type App, type Plugin } from "obsidian";
 import { patchPluginData } from "../plugin-data";
 import { anchorFromActiveSelection } from "./annotation-anchor";
+import { appendAnnotationFormMenuItems, setAnnotationForm } from "./annotation-form";
 import { AnnotationLayer } from "./annotation-layer";
 import { appendAnnotationLayerMenuItems, appendLayerFilterMenuItems } from "./annotation-layer-menus";
 import { AnnotationLayerPicker } from "./annotation-layer-picker";
@@ -364,6 +365,18 @@ export class PdfAnnotationsController {
 		menu.showAtPosition(at);
 	}
 
+	openAnnotationFormMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
+		const menu = new Menu();
+		appendAnnotationFormMenuItems(menu, ann, (form) => {
+			const current = this.store.forFile(pdfPath).find((item) => item.id === ann.id);
+			if (!current) return;
+			setAnnotationForm(current, form);
+			current.updatedAt = Date.now();
+			this.store.upsert(pdfPath, current);
+		});
+		menu.showAtPosition(at);
+	}
+
 	/**
 	 * The PDF view to act on: the active one if a PDF has focus, otherwise the
 	 * last PDF that did — as long as it's still open somewhere.
@@ -625,6 +638,10 @@ export class PdfAnnotationsController {
 			at: { x: pageBox.left + Math.max(ax, bx) + 6, y: pageBox.top + Math.min(ay, by) },
 			swatches: this.settings.palette,
 			quote,
+			onSaveText: (text, colorKey) => {
+				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;
+				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey, text);
+			},
 			onPickColor: (colorKey) => {
 				if (!pageView.div.isConnected || (view && view.file?.path !== pdfPath)) return;
 				this.placeMark(pdfPath, pageNumber, rect, quote, anchorRects, colorKey);
@@ -1177,7 +1194,7 @@ export class PdfAnnotationsController {
 		if (state) state.layer.rebuild(pdfPath, state.pages);
 	}
 
-	private placeMark(pdfPath: string, pageNumber: number, rect: PdfRect, quote?: string, anchorRects?: PdfRect[], colorKey?: string): void {
+	private placeMark(pdfPath: string, pageNumber: number, rect: PdfRect, quote?: string, anchorRects?: PdfRect[], colorKey?: string, text = ""): void {
 		const ann: PdfAnnotation = {
 			id: makeAnnotationId(),
 			page: pageNumber,
@@ -1190,7 +1207,7 @@ export class PdfAnnotationsController {
 			collapsed: true,
 			side: "right",
 			layerIds: this.activeLayerId ? [this.activeLayerId] : undefined,
-			text: "",
+			text,
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
 		};
@@ -1252,9 +1269,9 @@ export class PdfAnnotationsController {
 		});
 	}
 
-	/** Mobile text handles emit many selection changes; offer one palette after they settle. */
-	private attachMobileSelectionPalette(view: FileView, component: Component): void {
-		if (!Platform.isMobile) return;
+	/** Pointer/selection handles emit many changes; wait until the user releases them. */
+	private attachSelectionPalette(view: FileView, component: Component): void {
+		const enabled = () => Platform.isMobile ? this.settings.mobileSelectionPalette : this.settings.desktopSelectionPalette;
 		let timer: number | null = null;
 		let touching = false;
 		let changedDuringTouch = false;
@@ -1265,11 +1282,11 @@ export class PdfAnnotationsController {
 		};
 		const schedule = () => {
 			cancel();
-			if (!this.settings.mobileSelectionPalette) return;
+			if (!enabled()) return;
 			timer = window.setTimeout(() => {
 				timer = null;
-				if (touching || !view.containerEl.isConnected || !this.settings.mobileSelectionPalette ||
-					this.rectSelect.armed || this.pendingPlacement || this.pendingReanchor || this.pendingMarkPopover ||
+				if (touching || !view.containerEl.isConnected || !enabled() ||
+					this.rectSelect.armed || this.pendingPlacement || this.pendingReanchor ||
 					this.store.waitingForRevisionFiles) return;
 				const selected = anchorFromActiveSelection();
 				if (!selected || selected.view !== view || !selected.pageView.div.isConnected ||
@@ -1278,10 +1295,11 @@ export class PdfAnnotationsController {
 				if (!quote) return;
 				const key = JSON.stringify([selected.file.path, selected.pageNumber, selected.rect, quote]);
 				if (key === lastKey) return;
+				if (this.pendingMarkPopover && !this.pendingMarkPopover.handle.requestClose()) return;
 				lastKey = key;
 				this.showMarkPalette(selected.file.path, selected.pageNumber, selected.pageView,
 					selected.rect, quote, selected.rects, view);
-			}, 450);
+			}, Platform.isMobile ? 450 : 180);
 		};
 		component.registerDomEvent(document, "selectionchange", () => {
 			const selection = window.getSelection();
@@ -1293,17 +1311,18 @@ export class PdfAnnotationsController {
 			if (touching) changedDuringTouch = true;
 			else schedule();
 		});
-		component.registerDomEvent(view.containerEl, "touchstart", () => {
+		component.registerDomEvent(view.containerEl, "pointerdown", (event) => {
+			if (event.button !== 0) return;
 			touching = true;
 			changedDuringTouch = false;
 			lastKey = null;
 			cancel();
 		});
-		component.registerDomEvent(document, "touchend", () => {
+		component.registerDomEvent(document, "pointerup", () => {
 			touching = false;
 			if (changedDuringTouch) schedule();
 		});
-		component.registerDomEvent(document, "touchcancel", () => {
+		component.registerDomEvent(document, "pointercancel", () => {
 			touching = false;
 			changedDuringTouch = false;
 			cancel();
@@ -1353,7 +1372,7 @@ export class PdfAnnotationsController {
 		component.register(() => layer.destroy());
 		component.register(() => this.closePendingMarkPopover(view));
 		this.attachUndoKeys(view, component);
-		this.attachMobileSelectionPalette(view, component);
+		this.attachSelectionPalette(view, component);
 		onScaleChanging(view, component, () => layer.beginZoom());
 
 		const trackedPageDivs = new WeakSet<HTMLDivElement>();

@@ -4,6 +4,7 @@ import { buildAnnotationBox, type AnnotationBoxHandle } from "./annotation-box";
 import { AnnotationGestureController } from "./annotation-gestures";
 import { LeftAnnotationSpace, OUTER_MARGIN_PX, requiredLeftGutter, type LeftSpaceDemand } from "./annotation-space";
 import { appendAnnotationLayerMenuItems } from "./annotation-layer-menus";
+import { appendAnnotationFormMenuItems, setAnnotationForm } from "./annotation-form";
 import { annotationVisibleInLayer } from "./annotation-layers";
 import { darken, highlightsBothWays, resolveAnnotationColor, type PdfAnnotationSettings } from "./annotation-settings";
 import { adaptiveLeaderEndpoints, leaderVisible } from "./leader-geometry";
@@ -749,20 +750,9 @@ export class AnnotationLayer {
 
 	private openMenu(pdfPath: string, ann: PdfAnnotation, at: { x: number; y: number }): void {
 		const menu = new Menu();
+		appendAnnotationFormMenuItems(menu, ann, (form) => this.mutate(pdfPath, ann, (a) => setAnnotationForm(a, form)));
+		menu.addSeparator();
 		if (ann.markOnly) {
-			menu.addItem((i) =>
-				i
-					.setTitle("显示在右侧轨道")
-					.setIcon("message-square")
-					.onClick(() =>
-						this.mutate(pdfPath, ann, (a) => {
-							a.markOnly = undefined;
-							a.pinned = true;
-							a.collapsed = false;
-							a.side = "right";
-						})
-					)
-			);
 			menu.addItem((i) =>
 				i
 					.setTitle("重新指定勾画位置（选中文字或拖框）")
@@ -1089,7 +1079,11 @@ export class AnnotationLayer {
 			text: ann.text,
 			initialAction,
 			onPickColor: (colorKey) => this.mutate(pdfPath, ann, (a) => (a.colorKey = colorKey)),
-			onSaveText: (value) => this.mutate(pdfPath, ann, (a) => (a.text = value)),
+			onSaveText: (value, colorKey) => this.mutate(pdfPath, ann, (a) => {
+				a.text = value;
+				a.colorKey = colorKey;
+			}),
+			onChooseForm: (position) => this.openMenu(pdfPath, ann, position),
 			onDelete: () => {
 				this.store.remove(pdfPath, ann.id);
 				this.refresh();

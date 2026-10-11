@@ -10,7 +10,7 @@ Annotations Everywhere adds editable margin notes to Markdown and anchored annot
 - Share one annotation collection across multiple compatible PDFs, such as an original paper and its translation.
 - Search, filter, sort, copy, move, delete, and recover annotations from a vault-wide manager.
 - Organize annotations with colors, named layers, native or manual outlines, and single- or double-column reading order.
-- Use mobile-friendly controls and an optional palette after selecting PDF text.
+- Use a compact selection toolbar with preset colors and an add-note action on desktop or mobile.
 - Store annotations as plain vault files, with an optional revision-file format designed to reduce sync conflicts.
 
 ## Quick start
@@ -40,6 +40,10 @@ Open a PDF and use the command palette to:
 
 Text annotations retain the selected quote. Rectangular selections can be used for formulas, figures, or scanned content that cannot be selected as text.
 
+Enable the desktop or mobile selection toolbar in the plugin settings to show it automatically after selecting PDF text. Its colors come from the configurable preset palette. Choose a color to highlight immediately, or use the note icon to add text before saving.
+
+Existing PDF annotations can switch between highlights with hover notes, collapsed dots, freely positioned boxes, and left or right margin notes. Use the conversion action in the annotation list or the PDF annotation context menu. Conversion preserves the same annotation, including its text, quote, anchors, color, and layers.
+
 ## Annotation data and sync
 
 The default annotation directory is `.annotations-everywhere/` inside the vault. You can choose another vault folder in the plugin settings.
@@ -66,7 +70,7 @@ Restart Obsidian, then enable **Annotations Everywhere** under **Community plugi
 
 ## Compatibility
 
-- Minimum Obsidian version: 1.5.8
+- Minimum Obsidian version: 1.7.2
 - Desktop and mobile are supported.
 - PDF features rely on Obsidian's built-in PDF viewer. Viewer internals can change between Obsidian releases, so PDF interaction should be rechecked after major app updates.
 
