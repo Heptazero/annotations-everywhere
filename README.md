@@ -61,7 +61,9 @@ This first integration does not replace Everything Bilink's cropped embed previe
 
 ## Annotation data and sync
 
-Settings use compact **常用 / 引用 / 外观 / 管理** tabs, an inline search and flat collapsible sections. Data location, property synchronization and layers are under **管理**.
+Settings use compact **常用 / 引用 / 外观 / 管理** tabs, an inline search and flat collapsible sections. Search accepts multiple terms in any order and includes entered group names and folder paths; the search stays in place when the settings page refreshes. Search expansion does not replace the normal collapse state. Data location, property synchronization and layers are under **管理**.
+
+The reference-source picker repositions within the visible viewport when the window or mobile keyboard changes. Use Up/Down to navigate sources (Up from search selects the last result), Home/End on a result for the first/last entry, and Escape to dismiss and restore focus. Leaving the picker closes it and releases its temporary PDF-navigation key scope.
 
 The default annotation directory is `.annotations-everywhere/` inside the vault. You can choose another vault folder in the plugin settings.
 

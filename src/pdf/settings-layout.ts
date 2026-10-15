@@ -1,7 +1,9 @@
-import { Menu, Setting, prepareFuzzySearch, setIcon } from "obsidian";
+import { Menu, Setting, setIcon } from "obsidian";
+import { settingsSearchMatcher } from "./settings-search";
 
 export type SettingsPage = "common" | "references" | "appearance" | "management";
-export interface SettingsLayoutState { page: SettingsPage; open: Record<string, boolean> }
+export interface SettingsLayoutState { page: SettingsPage; open: Record<string, boolean>; query?: string }
+let layoutSequence = 0;
 const PAGES: { id: SettingsPage; name: string }[] = [
 	{ id: "common", name: "常用" }, { id: "references", name: "引用" },
 	{ id: "appearance", name: "外观" }, { id: "management", name: "管理" },
@@ -14,28 +16,35 @@ export function createSettingsLayout(container: HTMLElement, state: SettingsLayo
 	const search = root.createDiv("margin-notes-settings-search");
 	setIcon(search.createSpan(), "search");
 	const input = search.createEl("input", { attr: { type: "search", placeholder: "搜索设置…", "aria-label": "搜索设置" } });
+	input.value = state.query ?? "";
 	const clear = search.createEl("button", { cls: "clickable-icon", attr: { type: "button", title: "清除搜索", "aria-label": "清除搜索" } });
 	setIcon(clear, "x");
 	const tabs = root.createDiv({ cls: "margin-notes-settings-tabs", attr: { role: "tablist", "aria-label": "设置分类" } });
+	const status = root.createDiv({ cls: "setting-item-description margin-notes-settings-search-status", attr: { role: "status", "aria-live": "polite", "aria-atomic": "true" } });
 	const panel = root.createDiv("margin-notes-settings-panel");
-	panel.id = "margin-notes-settings-panel";
-	const empty = root.createDiv({ cls: "setting-item-description", text: "没有匹配的设置" });
-	const sections: { el: HTMLDetailsElement; body: HTMLElement; page: SettingsPage; id: string }[] = [];
+	panel.id = `margin-notes-settings-panel-${++layoutSequence}`;
+	const sections: { el: HTMLDetailsElement; body: HTMLElement; page: SettingsPage; id: string; title: string }[] = [];
 	const buttons = new Map<SettingsPage, HTMLButtonElement>();
 	const refresh = () => {
 		const query = input.value.trim();
+		state.query = input.value;
 		panel.setAttribute("role", query ? "region" : "tabpanel");
-		panel.setAttribute("aria-label", query ? "搜索结果" : PAGES.find((page) => page.id === state.page)!.name);
-		const match = prepareFuzzySearch(query.normalize("NFC"));
+		if (query) { panel.setAttribute("aria-label", "搜索结果"); panel.removeAttribute("aria-labelledby"); }
+		else { panel.removeAttribute("aria-label"); panel.setAttribute("aria-labelledby", `${panel.id}-${state.page}`); }
+		const match = settingsSearchMatcher(query);
 		tabs.hidden = !!query; clear.hidden = !query;
 		let visible = 0;
 		for (const section of sections) {
-			const text = section.el.textContent?.normalize("NFC") ?? "";
-			section.el.hidden = query ? !match(text) : section.page !== state.page;
+			const fields = [section.title, PAGES.find((page) => page.id === section.page)!.name,
+				...Array.from(section.body.querySelectorAll<HTMLElement>(".setting-item-name, .setting-item-description"), (el) => el.textContent ?? ""),
+				...Array.from(section.body.querySelectorAll<HTMLInputElement>("input:not([type=password]):not([type=checkbox]):not([type=range])"), (el) => el.value)];
+			section.el.hidden = query ? !match(fields) : section.page !== state.page;
 			if (!section.el.hidden) visible++;
 			section.el.open = query ? true : state.open[section.id] ?? true;
 		}
-		empty.hidden = visible > 0;
+		status.hidden = !query;
+		const message = visible ? `找到 ${visible} 个设置分区` : "没有匹配的设置";
+		if (status.textContent !== message) status.setText(message);
 		for (const [id, button] of buttons) {
 			button.setAttribute("aria-selected", String(state.page === id));
 			button.tabIndex = state.page === id ? 0 : -1;
@@ -43,12 +52,14 @@ export function createSettingsLayout(container: HTMLElement, state: SettingsLayo
 	};
 	for (const page of PAGES) {
 		const button = tabs.createEl("button", { text: page.name, attr: { type: "button", role: "tab", "aria-controls": panel.id } });
+		button.id = `${panel.id}-${page.id}`;
 		buttons.set(page.id, button);
 		button.addEventListener("click", () => { state.page = page.id; refresh(); });
 		button.addEventListener("keydown", (event) => {
-			if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+			if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
 			event.preventDefault();
-			const next = PAGES[(PAGES.findIndex((item) => item.id === page.id) + (event.key === "ArrowRight" ? 1 : -1) + PAGES.length) % PAGES.length];
+			const next = event.key === "Home" ? PAGES[0] : event.key === "End" ? PAGES[PAGES.length - 1]
+				: PAGES[(PAGES.findIndex((item) => item.id === page.id) + (event.key === "ArrowRight" ? 1 : -1) + PAGES.length) % PAGES.length];
 			state.page = next.id; refresh(); buttons.get(next.id)?.focus();
 		});
 	}
@@ -60,7 +71,7 @@ export function createSettingsLayout(container: HTMLElement, state: SettingsLayo
 		const summary = el.createEl("summary");
 		new Setting(summary).setName(title).setHeading();
 		const body = el.createDiv("margin-notes-settings-section-body");
-		sections.push({ el, body, page, id });
+		sections.push({ el, body, page, id, title });
 		el.open = state.open[id] ?? true;
 		el.addEventListener("toggle", () => { if (!input.value.trim() && !el.hidden) state.open[id] = el.open; });
 		return body;
