@@ -1,10 +1,12 @@
 # Annotations Everywhere — PDF annotations and Markdown sidenotes for Obsidian
 
+[English](README.md) · [简体中文](README.zh-CN.md) · [Releases](https://github.com/Heptazero/annotations-everywhere/releases) · [Report an issue](https://github.com/Heptazero/annotations-everywhere/issues)
+
 Annotations Everywhere is an open-source Obsidian plugin for PDF highlights, left/right margin notes, shared annotations between original and translated PDFs, and editable Markdown footnote sidenotes. Annotation data stays in your vault; the plugin does not rewrite your PDFs or require a cloud account.
 
 中文简介：在 Obsidian 中给 PDF 划线、添加左右侧边批注，让原文与保留版式的译文共享批注；也能把 Markdown 脚注显示为可编辑的页边注。支持全库批注搜索、按页码批量复制或移动、手动大纲，以及通过库内文件同步到手机。
 
-> **Version scope:** This README describes the current source branch. PDF reference backlinks and copy templates, semantic color groups, the redesigned desktop/mobile selection toolbar, expanded display conversions, and the tabbed settings UI are development-branch additions, not features of release **0.50.1**. Check the [release notes](https://github.com/Heptazero/annotations-everywhere/releases) for the version you install. Recent desktop/mobile interactions still need real-device acceptance testing.
+> **Version scope:** This README distinguishes released features from unreleased work. Release **0.50.1** includes the core PDF annotations, shared groups, manager, page-mapped transfers, outlines, Markdown sidenotes, and vault-local storage. PDF backlinks/copy templates, semantic color groups, the redesigned selection toolbar, expanded display conversions, and tabbed settings are implemented locally but **not yet published in a release or the public main branch**. Publishing these docs does not publish those implementations. Check the [release notes](https://github.com/Heptazero/annotations-everywhere/releases) for your version; recent desktop/mobile interactions still need real-device acceptance testing.
 
 ## What can I use this Obsidian plugin for?
 
@@ -133,6 +135,28 @@ Restart Obsidian, then enable **Annotations Everywhere** under **Community plugi
 The plugin reads Markdown/PDF files through Obsidian and uses Obsidian's link metadata to find PDF reference sources. It writes settings and annotation data to the vault; copying a reference only writes to the system clipboard. It makes no network requests and collects no analytics.
 
 PDF annotations are **not embedded in or exported into the PDF file**. Another PDF reader will not display this vault-local collection. Annotations Everywhere is not a PDF translator, OCR service, browser/webpage annotation extension, or bibliographic reference manager.
+
+## Frequently asked questions
+
+### Do translated PDFs need matching filenames or a cn_ prefix?
+
+No. Choose the other PDF manually when creating a shared group. Filename resemblance helps find candidates; it is not proof of identity and does not replace the page-geometry checks. You do not need a separate filename-mapping plugin.
+
+### Can three PDFs share annotations, or is sharing limited to a pair?
+
+Sharing supports more than two compatible PDFs. Add each to the shared group and cycle between members. They use one annotation collection, not a chain of pairwise copies.
+
+### Can I add a comment to an existing highlight later?
+
+The unreleased expanded display-conversion workflow can turn a highlight into a hover note, dot, floating box, or margin note while preserving the same record. It is not part of release 0.50.1; see the version notice above.
+
+### Will restoring a PDF automatically recover all my annotations?
+
+Not necessarily. Keep the annotation-data files as well as the PDF. If retained records are unmounted after a path change, choose the correct source in the manager's recovery workflow. A similar filename or a sufficient page count does not establish that the records belong to this document.
+
+### Does the plugin need an AI API key or a paid cloud service?
+
+No. Annotations Everywhere has no built-in AI service or API-key requirement. An external AI can help draft Markdown commentary, but the plugin does not automatically read, translate, or annotate papers with AI. Multi-device file transfer is handled by your chosen vault sync tool.
 
 ## Development
 

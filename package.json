@@ -1,7 +1,27 @@
 {
 	"name": "annotations-everywhere",
 	"version": "0.50.1",
-	"description": "Editable Markdown sidenotes and portable PDF annotations",
+	"description": "Annotate PDFs with highlights and margin notes, share annotations across original and translated PDFs, and turn Markdown footnotes into editable sidenotes.",
+	"homepage": "https://github.com/Heptazero/annotations-everywhere#readme",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Heptazero/annotations-everywhere.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Heptazero/annotations-everywhere/issues"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"pdf-annotations",
+		"pdf-highlights",
+		"margin-notes",
+		"sidenotes",
+		"footnotes",
+		"markdown",
+		"academic-reading",
+		"local-first"
+	],
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
