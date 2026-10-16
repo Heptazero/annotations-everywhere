@@ -1,7 +1,7 @@
 {
 	"id": "annotations-everywhere",
 	"name": "Annotations Everywhere",
-	"version": "0.50.1",
+	"version": "0.51.0",
 	"minAppVersion": "1.7.2",
 	"description": "Annotate PDFs with highlights and margin notes, share annotations across original and translated PDFs, and turn Markdown footnotes into editable sidenotes.",
 	"author": "heptazero",

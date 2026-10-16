@@ -6,7 +6,7 @@ Annotations Everywhere is an open-source Obsidian plugin for PDF highlights, lef
 
 中文简介：在 Obsidian 中给 PDF 划线、添加左右侧边批注，让原文与保留版式的译文共享批注；也能把 Markdown 脚注显示为可编辑的页边注。支持全库批注搜索、按页码批量复制或移动、手动大纲，以及通过库内文件同步到手机。
 
-> **Version scope:** This README distinguishes released features from unreleased work. Release **0.50.1** includes the core PDF annotations, shared groups, manager, page-mapped transfers, outlines, Markdown sidenotes, and vault-local storage. PDF backlinks/copy templates, semantic color groups, the redesigned selection toolbar, expanded display conversions, and tabbed settings are implemented locally but **not yet published in a release or the public main branch**. Publishing these docs does not publish those implementations. Check the [release notes](https://github.com/Heptazero/annotations-everywhere/releases) for your version; recent desktop/mobile interactions still need real-device acceptance testing.
+> **Version scope:** Release **0.51.0** adds PDF backlinks and copy templates, semantic color groups, the redesigned desktop/mobile selection toolbar, expanded display conversions, and tabbed settings. These additions are not in 0.50.1. Check the [release notes](https://github.com/Heptazero/annotations-everywhere/releases) for your installed version. Automated tests and build checks pass; recent desktop/mobile interactions still need real-device acceptance testing.
 
 ## What can I use this Obsidian plugin for?
 
@@ -18,7 +18,7 @@ Annotations Everywhere is an open-source Obsidian plugin for PDF highlights, lef
 | Can I find and delete highlights across a research folder?<br>全库批注搜索和批量删除 | [The vault-wide manager](#search-and-manage-annotations-across-your-vault) filters by folder and annotation status. |
 | Can Markdown footnotes appear in the margin?<br>Markdown 脚注转页边注 | [Editable, scroll-synced sidenotes](#show-markdown-footnotes-as-editable-sidenotes), using ordinary footnote syntax. |
 | Can I add an outline to a PDF without bookmarks?<br>手动大纲、章节折叠和双栏阅读 | [Native/shared outlines, manual headings, and reading order](#navigate-pdf-outlines-and-double-column-papers). No PDF metadata rewriting. |
-| Can I copy a PDF quote link and see which notes cite it?<br>PDF 双链引用和反向链接 | [Reference links and source-note navigation](#copy-pdf-quote-links-and-see-backlinks-development), on the development branch. |
+| Can I copy a PDF quote link and see which notes cite it?<br>PDF 双链引用和反向链接 | [Reference links and source-note navigation](#copy-pdf-quote-links-and-see-backlinks), available since 0.51.0. |
 | Can I use annotations on desktop and mobile, offline?<br>本地存储和手机同步 | [Vault-local annotation files](#sync-annotations-between-desktop-and-mobile). Your sync tool transfers the files; this is not a hosted sync service. |
 
 ## Highlight PDF text, formulas, and figures
@@ -29,9 +29,9 @@ Open a PDF, select text, and search the command palette for **[PDF]** to add a m
 
 Text selections retain their quote. A rectangle marks a location but does **not** extract searchable text, recognize a formula, or perform OCR. You can write a comment yourself without OCR.
 
-**Development-branch controls:** Enable the desktop or mobile selection toolbar to get one row of preset colors and an add-note button after selecting text. Choose a color to highlight, or write a comment before saving. Existing annotations can switch between hover notes, collapsed dots, floating boxes, and left/right margin notes without losing text, quote, anchors, color, or layers.
+**Selection toolbar and conversions (0.51.0+):** Enable the desktop or mobile selection toolbar to get one row of preset colors and an add-note button after selecting text. Choose a color to highlight, or write a comment before saving. Existing annotations can switch between hover notes, collapsed dots, floating boxes, and left/right margin notes without losing text, quote, anchors, color, or layers.
 
-**Development-branch color groups:** Create separate semantic palettes for different contexts, such as claim/evidence/question and definition/theorem/proof. Each group has independent color identities. Switching groups does not reinterpret old annotations; removing a preset retains its definition for existing notes.
+**Semantic color groups (0.51.0+):** Create separate semantic palettes for different contexts, such as claim/evidence/question and definition/theorem/proof. Each group has independent color identities. Switching groups does not reinterpret old annotations; removing a preset retains its definition for existing notes.
 
 ## Share annotations between original and translated PDFs
 
@@ -77,9 +77,9 @@ Use a PDF's native outline when present, or inherit an outline from another memb
 
 **[PDF] 切换批注阅读顺序（单栏 / 双栏）** changes how the plugin orders annotations for a single- or double-column paper. It does not alter the PDF's text layer or native copy/paste order. Manual headings supplement the plugin's outline without writing bookmarks into the PDF file.
 
-## Copy PDF quote links and see backlinks (development)
+## Copy PDF quote links and see backlinks
 
-**Development branch, not release 0.50.1.** Annotations Everywhere can copy a PDF text-selection or region link and show backlinks from that region to the Markdown notes that reference it.
+**Available since 0.51.0.** Annotations Everywhere can copy a PDF text-selection or region link and show backlinks from that region to the Markdown notes that reference it.
 
 1. Select PDF text and use the toolbar link icon or **[PDF] 复制选区引用链接**. Existing annotations and the annotation list also offer reference-copy actions.
 2. Paste into a Markdown note. Copying alone does not create an annotation or edit a note.
@@ -102,11 +102,11 @@ Your existing vault sync tool transfers the annotation files. The plugin has no 
 
 For overlapping edits on multiple devices, use **[PDF] 改用可同步的分文件批注** to migrate from the legacy `annotations.json` store to revision files, designed to reduce whole-file sync conflicts. Finish syncing all devices first and stop older versions from writing the legacy store. Revision files do not guarantee conflict-free edits; **[PDF] 查看批注同步冲突** exposes conflicts for review. Back up the data before migration.
 
-## Settings and keyboard controls (development)
+## Settings and keyboard controls
 
-The development settings UI uses **常用 / 引用 / 外观 / 管理** tabs, inline search, and collapsible sections. Search accepts multiple terms and entered group names/folder paths, retains the query on refresh, and preserves normal collapse state. Data location, property sync, and layers are under **管理**.
+The settings UI uses **常用 / 引用 / 外观 / 管理** tabs, inline search, and collapsible sections. Search accepts multiple terms and entered group names/folder paths, retains the query on refresh, and preserves normal collapse state. Data location, property sync, and layers are under **管理**.
 
-The development reference-source picker adjusts to window/mobile-keyboard changes. Use Up/Down to navigate (Up from search selects the last result), Home/End on a result for the first/last entry, and Escape to restore focus. Leaving it releases the temporary PDF-navigation key scope.
+The reference-source picker adjusts to window/mobile-keyboard changes. Use Up/Down to navigate (Up from search selects the last result), Home/End on a result for the first/last entry, and Escape to restore focus. Leaving it releases the temporary PDF-navigation key scope.
 
 ## Installation
 
@@ -148,7 +148,7 @@ Sharing supports more than two compatible PDFs. Add each to the shared group and
 
 ### Can I add a comment to an existing highlight later?
 
-The unreleased expanded display-conversion workflow can turn a highlight into a hover note, dot, floating box, or margin note while preserving the same record. It is not part of release 0.50.1; see the version notice above.
+Since 0.51.0, the expanded display-conversion workflow can turn a highlight into a hover note, dot, floating box, or margin note while preserving the same record. Use the annotation list or the PDF context menu to change its display form.
 
 ### Will restoring a PDF automatically recover all my annotations?
 
