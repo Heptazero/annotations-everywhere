@@ -29,8 +29,18 @@ export interface PdfOutlineDocument {
 	destroy(): Promise<void> | void;
 }
 
+interface PdfOutlineLoadingTask {
+	promise: Promise<PdfOutlineDocument>;
+	destroy?(): Promise<void> | void;
+}
+
 interface PdfJsModule {
-	getDocument(args: { data: ArrayBuffer }): { promise: Promise<PdfOutlineDocument> };
+	getDocument(args: { data: ArrayBuffer }): PdfOutlineLoadingTask;
+}
+
+interface PdfOutlineReaderOptions {
+	loadPdfJs?: () => Promise<PdfJsModule>;
+	timeoutMs?: number;
 }
 
 export interface NativePdfOutlineItem {
@@ -63,7 +73,7 @@ function destinationTop(dest: unknown[]): number | null {
 async function resolveDestination(
 	doc: PdfOutlineDocument,
 	dest: string | unknown[] | null | undefined,
-	pageCache: Map<number, PdfJsPage>
+	pageCache: Map<number, Promise<PdfJsPage>>
 ): Promise<{ page: number | null; topRatio: number | null }> {
 	try {
 		const resolved = typeof dest === "string" ? await doc.getDestination(dest) : dest;
@@ -74,11 +84,12 @@ async function resolveDestination(
 
 		const top = destinationTop(resolved);
 		if (top === null) return { page: pageIndex + 1, topRatio: null };
-		let page = pageCache.get(pageIndex);
-		if (!page) {
-			page = await doc.getPage(pageIndex + 1);
-			pageCache.set(pageIndex, page);
+		let pendingPage = pageCache.get(pageIndex);
+		if (!pendingPage) {
+			pendingPage = doc.getPage(pageIndex + 1);
+			pageCache.set(pageIndex, pendingPage);
 		}
+		const page = await pendingPage;
 		const [, bottom, , pageTop] = page.view;
 		const height = pageTop - bottom;
 		const topRatio = height > 0 ? Math.max(0, Math.min(1, (pageTop - top) / height)) : null;
@@ -93,7 +104,7 @@ export async function resolvePdfOutline(
 	doc: PdfOutlineDocument,
 	raw: PdfJsOutlineItem[] | null
 ): Promise<PdfOutlineItem[]> {
-	const pageCache = new Map<number, PdfJsPage>();
+	const pageCache = new Map<number, Promise<PdfJsPage>>();
 	const walk = async (source: PdfJsOutlineItem[]): Promise<PdfOutlineItem[]> => {
 		const groups = await Promise.all(
 			source.map(async (item) => {
@@ -167,7 +178,12 @@ interface PDFPageProxyLike {
 export class PdfOutlineReader {
 	private cache = new Map<string, CachedOutline>();
 
-	constructor(private app: App) {}
+	constructor(private app: App, private options: PdfOutlineReaderOptions = {}) {}
+
+	/** A user retry starts a fresh read, but never interrupts another caller's task. */
+	invalidate(filePath: string): void {
+		this.cache.delete(filePath);
+	}
 
 	read(file: TFile): Promise<PdfOutlineItem[]> {
 		const revision = `${file.stat.mtime}:${file.stat.size}`;
@@ -182,13 +198,47 @@ export class PdfOutlineReader {
 	}
 
 	private async readFresh(file: TFile): Promise<PdfOutlineItem[]> {
-		const pdfjs = (await loadPdfJs()) as unknown as PdfJsModule;
-		const data = await this.app.vault.readBinary(file);
-		const doc = await pdfjs.getDocument({ data }).promise;
+		let stopped = false;
+		let task: PdfOutlineLoadingTask | undefined;
+		let doc: PdfOutlineDocument | undefined;
+		let released = false;
+		let timer: number | undefined;
+		const timeoutError = new Error("读取 PDF 大纲超时，请重试");
+		const release = () => {
+			const destroy = task?.destroy?.bind(task) ?? doc?.destroy.bind(doc);
+			if (released || !destroy) return;
+			released = true;
+			// A worker that has stopped responding must not keep the UI pending
+			// during cleanup. This only releases the document owned by this read.
+			try { void Promise.resolve(destroy()).catch(() => {}); } catch { /* already closed */ }
+		};
+		const read = async (): Promise<PdfOutlineItem[]> => {
+			const pdfjs = this.options.loadPdfJs
+				? await this.options.loadPdfJs()
+				: (await loadPdfJs()) as unknown as PdfJsModule;
+			if (stopped) throw timeoutError;
+			const data = await this.app.vault.readBinary(file);
+			if (stopped) throw timeoutError;
+			task = pdfjs.getDocument({ data });
+			doc = await task.promise;
+			if (stopped) {
+				release();
+				throw timeoutError;
+			}
+			// Await ALL destination/page requests before destroying their worker.
+			return await resolvePdfOutline(doc, await doc.getOutline());
+		};
 		try {
-			return resolvePdfOutline(doc, await doc.getOutline());
+			return await Promise.race([
+				read(),
+				new Promise<never>((_resolve, reject) => {
+					timer = window.setTimeout(() => { stopped = true; reject(timeoutError); }, this.options.timeoutMs ?? 15_000);
+				}),
+			]);
 		} finally {
-			await doc.destroy();
+			if (timer !== undefined) window.clearTimeout(timer);
+			stopped = true;
+			release();
 		}
 	}
 }

@@ -781,6 +781,11 @@ export class PdfAnnotationsController {
 		return file ? this.store.sharedMembers(file.path) : [];
 	}
 
+	/** Explicit retry must also refresh outlines inherited from shared members. */
+	invalidateSharedOutline(pdfPath: string): void {
+		for (const path of [pdfPath, ...this.store.sharedMembers(pdfPath)]) this.outlineReader.invalidate(path);
+	}
+
 	/** Current PDF first; otherwise the first shared member with a non-empty outline. */
 	async sharedOutline(pdfPath: string): Promise<SharedOutlineResult> {
 		const candidates = [pdfPath, ...this.store.sharedMembers(pdfPath).filter((path) => path !== pdfPath)];

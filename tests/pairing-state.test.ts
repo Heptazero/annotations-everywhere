@@ -11,6 +11,7 @@ import "./reading-order.test";
 import "./markdown-margin.test";
 import "./mark-click.test";
 import "./manual-outline.test";
+import "./pdf-outline-reader.test";
 import "./pdf-layout.test";
 import "./editor-key-scope.test";
 import "./source-annotation-sync.test";

@@ -67,6 +67,7 @@ export class AnnotationListView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		++this.renderGeneration;
 		if (this.groupSwitchTimer !== null) window.clearTimeout(this.groupSwitchTimer);
 		if (this.viewSwitchTimer !== null) window.clearTimeout(this.viewSwitchTimer);
 	}
@@ -240,32 +241,44 @@ export class AnnotationListView extends ItemView {
 
 	private renderOutline(parent: HTMLElement, pdfPath: string, restoreScroll: number, generation: number): void {
 		const host = parent.createDiv("margin-notes-pdf-outline");
+		const source = host.createDiv("margin-notes-pdf-outline-source");
+		setIcon(source.createSpan({ cls: "margin-notes-pdf-outline-source-icon" }), "book-open");
+		const sourceLabel = source.createSpan({ cls: "margin-notes-pdf-outline-source-name", text: "大纲" });
+		const retry = source.createEl("button", {
+			cls: "margin-notes-pdf-outline-more clickable-icon",
+			attr: { type: "button", "aria-label": "重新读取 PDF 大纲", title: "重新读取 PDF 大纲" },
+		});
+		setIcon(retry, "refresh-cw");
+		retry.disabled = true;
+		retry.addEventListener("click", () => {
+			this.controller.invalidateSharedOutline(pdfPath);
+			this.render();
+		});
+		const add = source.createEl("button", {
+			cls: "margin-notes-pdf-outline-add clickable-icon",
+			attr: { type: "button", "aria-label": "添加手动大纲标题", title: "添加手动大纲标题" },
+		});
+		setIcon(add, "plus");
+		add.addEventListener("click", () => this.controller.openManualOutlineEditor(pdfPath));
 		const loading = host.createDiv({ cls: "margin-notes-pdf-list-empty", text: "正在读取大纲…" });
 		this.restoreUi(restoreScroll, generation);
 		void this.controller.sharedOutline(pdfPath).then((result) => {
 			if (generation !== this.renderGeneration || this.panelMode !== "outline" || this.renderedPath !== pdfPath) return;
+			retry.disabled = false;
 			loading.remove();
-			const source = host.createDiv("margin-notes-pdf-outline-source");
-			setIcon(source.createSpan({ cls: "margin-notes-pdf-outline-source-icon" }), "book-open");
 			const sourceName = result.sourcePath?.split("/").pop() ?? "";
-			source.createSpan({
-				cls: "margin-notes-pdf-outline-source-name",
-				text: result.hasManual
+			sourceLabel.setText(result.hasManual
 					? result.sourcePath === pdfPath ? "大纲 · 含手动标题" : `共享大纲 · ${sourceName} · 含手动标题`
-					: result.sourcePath === pdfPath ? "当前 PDF 大纲" : result.sourcePath ? `共享大纲 · ${sourceName}` : "章节与批注",
+					: result.sourcePath === pdfPath ? "当前 PDF 大纲" : result.sourcePath ? `共享大纲 · ${sourceName}` : "章节与批注");
+			if (result.error) host.createDiv({
+				cls: "margin-notes-pdf-list-empty",
+				text: `部分大纲未能读取：${result.error}。可点击刷新重试，或用 + 添加标题。`,
 			});
-			const add = source.createEl("button", {
-				cls: "margin-notes-pdf-outline-add clickable-icon",
-				attr: { "aria-label": "添加手动大纲标题", title: "添加手动大纲标题" },
-			});
-			setIcon(add, "plus");
-			add.addEventListener("click", () => this.controller.openManualOutlineEditor(pdfPath));
 			const anns = this.controller.sortAnnotations(pdfPath, this.controller.store.forFile(pdfPath));
 			if (!result.sourcePath || result.items.length === 0) {
 				host.createDiv({
 					cls: "margin-notes-pdf-list-empty",
-					text: result.error
-						? "读取 PDF 大纲失败"
+					text: result.error ? "大纲暂不可用；可重试或点击 + 添加手动标题"
 						: this.controller.sharedMembersOfActive().length > 1
 							? "共享组中没有大纲；可点击 + 添加手动标题"
 							: "这份 PDF 没有大纲；可点击 + 添加手动标题",
@@ -279,9 +292,10 @@ export class AnnotationListView extends ItemView {
 			const tree = host.createDiv({ cls: "margin-notes-pdf-outline-tree", attr: { role: "tree" } });
 			this.renderOutlineItems(tree, pdfPath, result.sourcePath, result.items, groups, 0, "");
 			this.restoreUi(restoreScroll, generation);
-		}).catch(() => {
+		}).catch((error: unknown) => {
 			if (generation !== this.renderGeneration || !loading.isConnected) return;
-			loading.setText("读取 PDF 大纲失败");
+			retry.disabled = false;
+			loading.setText(`读取 PDF 大纲失败：${error instanceof Error ? error.message : "未知错误"}。可点击刷新重试。`);
 		});
 	}
 
@@ -640,34 +654,6 @@ export class AnnotationListView extends ItemView {
 				ann.updatedAt = Date.now();
 				this.controller.store.upsert(pdfPath, ann);
 			},
-			actions: [
-				{
-					icon: "link", title: "复制引用 / 查看引用来源",
-					onClick: (event) => this.controller.openReferenceMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
-				},
-				{
-					icon: "replace",
-					title: "转换批注形式",
-					onClick: (event) => this.controller.openAnnotationFormMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
-				},
-				{
-					icon: "layers",
-					title: "设置所属图层",
-					onClick: (event) =>
-						this.controller.openAnnotationLayerMenu(pdfPath, ann, { x: event.clientX, y: event.clientY }),
-				},
-				{
-					icon: "arrow-up-right",
-					title: "跳转到 PDF 里的位置",
-					onClick: () => void this.controller.revealAnnotation(pdfPath, ann),
-				},
-				{
-					icon: "x",
-					title: "删除勾画及其批注",
-					cls: "margin-notes-pdf-del",
-					onClick: confirmDelete,
-				},
-			],
 		});
 		const row = handle.el;
 		row.dataset.mode = "free";
@@ -682,7 +668,7 @@ export class AnnotationListView extends ItemView {
 		row.insertBefore(headline, handle.bodyEl);
 		const color = headline.createEl("button", {
 			cls: "margin-notes-pdf-list-mark-color",
-			attr: { "aria-label": "修改勾画颜色", title: "修改勾画颜色" },
+			attr: { type: "button", "aria-label": "修改勾画颜色", title: "修改勾画颜色" },
 		});
 		color.style.backgroundColor = this.colorOf(ann);
 		color.addEventListener("click", (event) => {
@@ -705,19 +691,43 @@ export class AnnotationListView extends ItemView {
 		const quote = headline.createEl("button", {
 			cls: "margin-notes-pdf-list-mark-quote",
 			text: ann.quote?.trim() || "框选勾画（没有可选文字）",
-			attr: { "aria-label": "跳转到 PDF 里的勾画位置" },
+			attr: { type: "button", "aria-label": "跳转到 PDF 里的勾画位置" },
 		});
 		quote.addEventListener("click", (event) => {
 			event.stopPropagation();
 			void this.controller.revealAnnotation(pdfPath, ann);
 		});
-		const edit = headline.createEl("button", {
-			cls: "margin-notes-pdf-list-mark-edit",
-			text: ann.text ? "编辑批注" : "添加批注",
+		const controls = handle.toolbarEl;
+		headline.appendChild(controls);
+		const editLabel = ann.text ? "编辑批注" : "添加批注";
+		const edit = controls.createEl("button", {
+			cls: "margin-notes-pdf-list-mark-edit clickable-icon",
+			attr: { type: "button", "aria-label": editLabel, title: editLabel },
 		});
+		setIcon(edit, ann.text ? "pencil" : "message-square-plus");
 		edit.addEventListener("click", (event) => {
 			event.stopPropagation();
 			handle.enterEdit();
+		});
+		const more = controls.createEl("button", {
+			cls: "margin-notes-pdf-list-mark-more clickable-icon",
+			attr: { type: "button", "aria-label": "更多勾画操作", title: "更多勾画操作" },
+		});
+		setIcon(more, "ellipsis");
+		more.addEventListener("click", (event) => {
+			event.stopPropagation();
+			const rect = more.getBoundingClientRect();
+			const at = { x: rect.left, y: rect.bottom };
+			const menu = new Menu();
+			menu.addItem((item) => item.setTitle("复制引用 / 查看引用来源").setIcon("link")
+				.onClick(() => this.controller.openReferenceMenu(pdfPath, ann, at)));
+			menu.addItem((item) => item.setTitle("转换批注形式").setIcon("replace")
+				.onClick(() => this.controller.openAnnotationFormMenu(pdfPath, ann, at)));
+			menu.addItem((item) => item.setTitle("设置所属图层").setIcon("layers")
+				.onClick(() => this.controller.openAnnotationLayerMenu(pdfPath, ann, at)));
+			menu.addSeparator();
+			menu.addItem((item) => item.setTitle("删除勾画及其批注…").setIcon("trash").onClick(confirmDelete));
+			menu.showAtPosition(at);
 		});
 
 		row.addEventListener("mouseenter", () => this.controller.peekAnnotation(ann));

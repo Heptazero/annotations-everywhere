@@ -1,6 +1,6 @@
 {
 	"name": "annotations-everywhere",
-	"version": "0.51.0",
+	"version": "0.51.1",
 	"description": "Annotate PDFs with highlights and margin notes, share annotations across original and translated PDFs, and turn Markdown footnotes into editable sidenotes.",
 	"homepage": "https://github.com/Heptazero/annotations-everywhere#readme",
 	"repository": {
